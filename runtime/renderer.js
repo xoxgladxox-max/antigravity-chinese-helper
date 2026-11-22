@@ -7,7 +7,7 @@
   if (!document.documentElement || !document.body) return null;
   window.__antigravityChineseHelper?.uninstall?.();
 
-  const VERSION = '0.3.46';
+  const VERSION = '0.3.46.1';
   let strings, translationIndex;
   setStrings(dictionary);
   let stopped = false;
@@ -1418,7 +1418,7 @@
     return {provider, client, selected, quotaService, summaryStore, agentRegistry};
   }
   function composerBindings(element) {
-    let fiber = currentFiber(element), footer = null, box = null;
+    let fiber = currentFiber(element.closest?.('[data-agent-composer-root]') ?? element), footer = null, box = null;
     while (fiber && (!footer || !box)) {
       const props = fiber.memoizedProps;
       if (!footer && typeof props?.isConvoInputEmpty === 'boolean') footer = props;

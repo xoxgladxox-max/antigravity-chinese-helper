@@ -119,19 +119,23 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
     cascadeContext:{state:{agentStateProvider:provider}}, selectedModel:selected
   }}, return:{memoizedProps:{value:{store}}, return:{memoizedProps:{value:registry},
     return:{memoizedProps:{services:{core:{authService:{_lsClient:client}}}}, return:null}}}};
+  const initialFooter = composer ? {...composer.footer} : null;
   const buildFiber = () => composer ? {
     get memoizedProps() { return composer.footer; },
     return:{get memoizedProps() { return {restoreReviewComments() {}, handleSubmit:composer.submit, slashCommandItems:composer.slashItems}; }, return:providerFiber}
   } : providerFiber;
+  const bailedOutAnchorFiber = composer ? {memoizedProps:initialFooter, return:providerFiber} : providerFiber;
+  const footerElement = composer ? {nodeType:1, __reactFiber$fixture:buildFiber()} : null;
   let anchor = {
     isConnected:true,
     contains:target => target === anchor,
     matches:selector => selector === '[data-testid="model-selector-trigger"]',
     getAttribute:() => null,
     closest:selector => selector === '[data-cascade-id]' ? {getAttribute:() => viewId}
+      : composer && selector === '[data-agent-composer-root]' ? footerElement
       : composer && selector === '#antigravity\\.agentSidePanelInputBox' ? composerElement : null,
     after(host) { assert.equal(host, view.host); },
-    __reactFiber$fixture:buildFiber()
+    __reactFiber$fixture:bailedOutAnchorFiber
   };
   const storage = {...stored};
   const nativeStorage = {
@@ -188,7 +192,6 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
     setLimit:tokens => actions.setContextLimit?.(tokens) ?? false,
     compact:() => actions.compactConversation?.() ?? false,
     mutateComposer() {
-      anchor.__reactFiber$fixture = buildFiber();
       controller.mutations([{type:'childList', target:composerTarget}]);
     },
     select(value, label = String(value)) { selected.value = value; selected.label = label; controller.discover(anchor); },
