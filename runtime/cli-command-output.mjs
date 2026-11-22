@@ -113,14 +113,15 @@ async function forwardOutput(input, output, translate, stderr, dictionary) {
       pending += chunk;
       let end;
       while ((end = pending.indexOf('\n')) !== -1) {
-        const line = pending.slice(0, end);
+        const line = pending.slice(0, end).replace(/\r$/, '');
         pending = pending.slice(end + 1);
         if (stderr && (help || /^Usage(?: of |: )/.test(line))) help += line + '\n';
         else yield translate(line, stderr) + '\n';
       }
     }
-    if (help) yield localizeCliNativeHelp(help + pending, dictionary).replace(/^Error: (.*)$/gm, line => translate(line, true));
-    else if (pending) yield translate(pending, stderr);
+    const tail = pending.replace(/\r$/, '');
+    if (help) yield localizeCliNativeHelp(help + tail, dictionary).replace(/^Error: (.*)$/gm, line => translate(line, true));
+    else if (tail) yield translate(tail, stderr);
   }, output, {end:false});
 }
 
@@ -129,10 +130,11 @@ export async function runCliOutputCommand(binaryPath, args, {command, action, ma
   const diagnosticsOnly = ['agents', 'models'].includes(command);
   const env = ['install','update','remote-control'].includes(command) ? process.env : {...process.env, AGY_CLI_DISABLE_AUTO_UPDATE:'true'};
   const stdio = machineOutput ? 'inherit' : ['inherit', diagnosticsOnly ? 'inherit' : 'pipe', 'pipe'];
-  const child = spawn(binaryPath, args, {env, stdio});
+  const useShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(binaryPath);
+  const child = spawn(binaryPath, args, {env, stdio, ...(useShell ? {shell:true} : {})});
   const term = () => child.kill('SIGTERM'), hup = () => child.kill('SIGHUP');
   process.on('SIGTERM', term);
-  process.on('SIGHUP', hup);
+  if (process.platform !== 'win32') process.on('SIGHUP', hup);
   try {
     const exit = new Promise((resolve,reject) => {
       child.once('error', reject);
@@ -150,6 +152,6 @@ export async function runCliOutputCommand(binaryPath, args, {command, action, ma
     return 141;
   } finally {
     process.off('SIGTERM', term);
-    process.off('SIGHUP', hup);
+    if (process.platform !== 'win32') process.off('SIGHUP', hup);
   }
 }
