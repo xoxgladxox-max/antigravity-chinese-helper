@@ -999,3 +999,62 @@ test('disabled context overrides ignore saved budgets and preserve native sends 
     assert.equal(request.cascadeConfig.checkpointConfig, undefined);
   }
 });
+
+test('compact action guards empty conversations, busy runs, and unsent drafts before submitting /compact', async t => {
+  const send = deferred();
+  const submitted = [];
+  const compactInfo = {$typeName:'exa.codeium_common_pb.SlashCommandInfo', name:'compact', type:1};
+  const composer = {
+    footer:{isConvoInputEmpty:true, hasAttachments:false, canSendWithoutText:false, isRunning:false,
+      isConvoLoading:false, inExistingConversation:false, audioPhase:'idle', slashCommandItems:[{info:compactInfo}]},
+    slashItems:[{info:compactInfo}],
+    submit:(items, media, clearEditor) => { submitted.push({items, media, clearEditor}); return send.promise; }
+  };
+  const f = fixture({conversationId:'_new', fullyIdle:true, trajectorySlice:null}, {
+    contextOverridesEnabled:false, composer, metadata:() => ({generatorMetadata:[record(0)]})
+  });
+  t.after(() => f.controller.dispose());
+  f.mount(); await settle();
+  assert.equal(f.snapshot().compact.enabled, false);
+  assert.match(f.snapshot().compact.reason, /尚无对话记录/);
+  assert.equal(await f.compact(), false);
+  assert.equal(submitted.length, 0);
+
+  composer.footer = {...composer.footer, inExistingConversation:true, isRunning:true};
+  f.emit(state('A', 1)); await settle();
+  assert.equal(f.snapshot().compact.enabled, false);
+  assert.match(f.snapshot().compact.reason, /正在运行中/);
+
+  composer.footer = {...composer.footer, isRunning:false, isConvoInputEmpty:false};
+  f.emit({...state('A', 1), fullyIdle:true}); await settle();
+  assert.equal(f.snapshot().compact.enabled, false);
+  assert.match(f.snapshot().compact.reason, /未发送内容/);
+  assert.equal(await f.compact(), false, 'must never submit /compact over an unsent user draft');
+  assert.equal(submitted.length, 0);
+
+  composer.footer = {...composer.footer, isConvoInputEmpty:true};
+  f.mutateComposer(); await settle();
+  assert.equal(f.snapshot().compact.enabled, true);
+
+  const pendingCompact = f.compact();
+  assert.equal(f.snapshot().compact.busy, true);
+  assert.equal(f.snapshot().compact.enabled, false);
+  assert.equal(submitted.length, 1);
+  assert.deepEqual(Array.from(submitted[0].media), []);
+  assert.equal(submitted[0].items.length, 1);
+  assert.equal(submitted[0].items[0].$typeName, 'exa.codeium_common_pb.TextOrScopeItem');
+  assert.deepEqual(JSON.parse(JSON.stringify(submitted[0].items[0].chunk)), {
+    case:'item',
+    value:{scopeItem:{case:'slashCommand', value:{info:compactInfo, argumentValues:{}}}}
+  });
+
+  f.emit({...state('A', 1), fullyIdle:false, activeHook:{hookName:'context_summary'}});
+  send.resolve();
+  assert.equal(await pendingCompact, true);
+  await settle();
+  assert.equal(f.snapshot().compact.busy, true, 'native context_summary hook keeps compact button in busy state');
+
+  f.emit({...state('A', 1), fullyIdle:true, activeHook:null}); await settle();
+  assert.equal(f.snapshot().compact.busy, false);
+  assert.equal(f.snapshot().compact.enabled, true);
+});

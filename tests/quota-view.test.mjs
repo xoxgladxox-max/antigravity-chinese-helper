@@ -338,3 +338,42 @@ test('disabled context controls leave only native usage and quota displays', t =
   assert.equal(f.row('context','压缩阈值'), '512.00K');
   assert.equal(f.row('context','使用比例'), '25%');
 });
+
+test('compact button mounts right after weekly quota, explains disabled reasons, triggers native compact, and cleans up', t => {
+  let clicks = 0;
+  const f = fixture(undefined, {contextOverridesEnabled:false, actions:{compactConversation:() => { clicks++; }}});
+  t.after(() => f.view.dispose());
+  const shadowChildren = f.view.host.shadowRoot.children;
+  const weeklyItem = f.elements.find(element => element.dataset.ring === 'weekly').parentElement;
+  const button = f.element('context-compact-button');
+  const status = f.element('context-compact-status');
+  const tooltip = f.elements.find(element => element.id === 'context-compact-tooltip');
+  assert.equal(shadowChildren.indexOf(button.parentElement), shadowChildren.indexOf(weeklyItem) + 1,
+    'compact button sits immediately to the right of the weekly quota ring');
+  assert.equal(button.disabled, true);
+
+  f.view.update({compact:{enabled:false, busy:false, reason:'输入框中有未发送内容，请先发送或清空后再压缩'}});
+  button.parentElement.emit('pointerenter');
+  assert.equal(tooltip.hidden, false, 'hovering a disabled compact wrapper still shows the reason tooltip');
+  assert.equal(status.textContent, '输入框中有未发送内容，请先发送或清空后再压缩');
+  const blockedClick = button.emit('click', {bubbles:true});
+  assert.equal(blockedClick.propagationStopped, true);
+  assert.equal(clicks, 0);
+
+  f.view.update({compact:{enabled:true, busy:false, reason:'点击立即压缩当前对话历史'}});
+  assert.equal(button.disabled, false);
+  assert.equal(button.children[0].textContent, '压缩');
+  button.emit('click', {bubbles:true});
+  assert.equal(clicks, 1);
+
+  f.view.update({compact:{enabled:false, busy:true, reason:'正在压缩对话历史…'}});
+  assert.equal(button.disabled, true);
+  assert.equal(button.getAttribute('data-busy'), 'true');
+  assert.equal(button.children[0].textContent, '压缩中');
+  button.emit('click', {bubbles:true});
+  assert.equal(clicks, 1, 'busy compact button rejects duplicate clicks');
+
+  f.view.dispose();
+  assert.equal(tooltip.hidden, true);
+  assert.equal(f.view.host.isConnected, false);
+});

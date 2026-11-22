@@ -40,7 +40,7 @@ function state(id, generation, {stepUsage, costSummary} = {}) {
 }
 
 function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, config, stored = {}, save, load, windowGlobals = {}, client: suppliedClient,
-  childStates = {}, byParent = {}, summaries = {}, contextOverridesEnabled = true} = {}) {
+  childStates = {}, byParent = {}, summaries = {}, contextOverridesEnabled = true, composer = null} = {}) {
   let current = initial;
   let viewId = initial?.conversationId;
   const listeners = new Set();
@@ -113,16 +113,25 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
     dispose() { this.disposed = true; }
   });
   let view = createView();
+  const composerTarget = {nodeType:1};
+  const composerElement = {nodeType:1, contains:target => target === composerTarget};
+  const providerFiber = {memoizedProps:{value:{
+    cascadeContext:{state:{agentStateProvider:provider}}, selectedModel:selected
+  }}, return:{memoizedProps:{value:{store}}, return:{memoizedProps:{value:registry},
+    return:{memoizedProps:{services:{core:{authService:{_lsClient:client}}}}, return:null}}}};
+  const buildFiber = () => composer ? {
+    get memoizedProps() { return composer.footer; },
+    return:{get memoizedProps() { return {restoreReviewComments() {}, handleSubmit:composer.submit, slashCommandItems:composer.slashItems}; }, return:providerFiber}
+  } : providerFiber;
   let anchor = {
     isConnected:true,
+    contains:target => target === anchor,
     matches:selector => selector === '[data-testid="model-selector-trigger"]',
     getAttribute:() => null,
-    closest:selector => selector === '[data-cascade-id]' ? {getAttribute:() => viewId} : null,
+    closest:selector => selector === '[data-cascade-id]' ? {getAttribute:() => viewId}
+      : composer && selector === '#antigravity\\.agentSidePanelInputBox' ? composerElement : null,
     after(host) { assert.equal(host, view.host); },
-    __reactFiber$fixture:{memoizedProps:{value:{
-      cascadeContext:{state:{agentStateProvider:provider}}, selectedModel:selected
-    }}, return:{memoizedProps:{value:{store}}, return:{memoizedProps:{value:registry},
-      return:{memoizedProps:{services:{core:{authService:{_lsClient:client}}}}, return:null}}}}
+    __reactFiber$fixture:buildFiber()
   };
   const storage = {...stored};
   const nativeStorage = {
@@ -143,13 +152,18 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
     {fieldKind:'scalar', localName:'tokenThreshold', default:0},
     {fieldKind:'scalar', localName:'enabled', default:false}
   ]};
+  const itemSchema = {kind:'message', typeName:'exa.codeium_common_pb.TextOrScopeItem', members:[{kind:'oneof', localName:'chunk'}]};
   const cascadeSchema = {kind:'message', typeName:'exa.cortex_pb.CascadeConfig', fields:[{localName:'checkpointConfig', message:checkpointSchema}]};
-  const sendSchema = {kind:'message', typeName:'exa.language_server_pb.SendUserCascadeMessageRequest', fields:[{localName:'cascadeConfig', message:cascadeSchema}]};
-  function createNativeMessage(schema) {
+  const sendSchema = {kind:'message', typeName:'exa.language_server_pb.SendUserCascadeMessageRequest', fields:[
+    {localName:'items', message:itemSchema},
+    {localName:'cascadeConfig', message:cascadeSchema}
+  ]};
+  function createNativeMessage(schema, init) {
     const defaults = {};
     for (const field of schema.members) if (field.fieldKind === 'scalar') defaults[field.localName] = field.default;
     const message = Object.create(defaults);
     message.$typeName = schema.typeName;
+    if (init) Object.assign(message, init);
     return message;
   }
   const document = {defaultView:{...windowGlobals, nativeStorage, sendSchema, createNativeMessage}};
@@ -164,14 +178,19 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
     mount:() => controller.discover(anchor),
     remount() { anchor.isConnected = false; controller.cleanup(); anchor = {...anchor,isConnected:true}; controller.discover(anchor); },
     rebindProvider() {
-      anchor.__reactFiber$fixture.memoizedProps.value.cascadeContext.state.agentStateProvider = {...provider};
+      providerFiber.memoizedProps.value.cascadeContext.state.agentStateProvider = {...provider};
       controller.discover(anchor);
     },
     useClient(value) {
-      anchor.__reactFiber$fixture.return.return.return.memoizedProps.services.core.authService._lsClient = value;
+      providerFiber.return.return.return.memoizedProps.services.core.authService._lsClient = value;
       controller.discover(anchor);
     },
     setLimit:tokens => actions.setContextLimit?.(tokens) ?? false,
+    compact:() => actions.compactConversation?.() ?? false,
+    mutateComposer() {
+      anchor.__reactFiber$fixture = buildFiber();
+      controller.mutations([{type:'childList', target:composerTarget}]);
+    },
     select(value, label = String(value)) { selected.value = value; selected.label = label; controller.discover(anchor); },
     emit(next = current, id = next.conversationId ?? viewId) { current = next; viewId = id; for (const listener of listeners) listener(); },
     emitChild(id, next = childStates[id]) {
