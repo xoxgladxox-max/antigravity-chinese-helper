@@ -7,7 +7,7 @@
   if (!document.documentElement || !document.body) return null;
   window.__antigravityChineseHelper?.uninstall?.();
 
-  const VERSION = '0.3.46.1';
+  const VERSION = '0.3.46';
   let strings, translationIndex;
   setStrings(dictionary);
   let stopped = false;
@@ -1271,9 +1271,20 @@
     return ['Object.create', '$typeName', '.members', '.localName', '.typeName', '.fieldKind'].every(part => source.includes(part));
   })());
   const createCheckpoint = checkpointSchema && createMessage ? () => createMessage(checkpointSchema) : null;
-  const createCompactItem = info => itemSchema && createMessage ? createMessage(itemSchema, {
-    chunk:{case:'item', value:{scopeItem:{case:'slashCommand', value:{info:info ?? {name:'compact', type:1}, argumentValues:{}}}}}
-  }) : null;
+  const createCompactItem = info => {
+    const payload = {
+      $typeName:'exa.codeium_common_pb.TextOrScopeItem',
+      chunk:{case:'item', value:{
+        $typeName:'exa.codeium_common_pb.ContextScopeItem',
+        scopeItem:{case:'slashCommand', value:{
+          $typeName:'exa.codeium_common_pb.SlashCommandScopeItem',
+          info:info ?? {$typeName:'exa.codeium_common_pb.SlashCommandInfo', name:'compact', type:1},
+          argumentValues:{}
+        }}
+      }}
+    };
+    return itemSchema && createMessage ? createMessage(itemSchema, payload) : payload;
+  };
   const copyMessage = (message, changes) => Object.assign(Object.create(Object.getPrototypeOf(message)), message, changes);
   function quotaFamily(label) {
     if (/gemini/i.test(label ?? '')) return 'gemini';
@@ -1418,17 +1429,31 @@
     return {provider, client, selected, quotaService, summaryStore, agentRegistry};
   }
   function composerBindings(element) {
-    let fiber = currentFiber(element.closest?.('[data-agent-composer-root]') ?? element), footer = null, box = null;
+    const root = element.closest?.('[data-agent-composer-root], .agy-composer-footer, [class*="@container/input-footer"]') ?? element;
+    let fiber = currentFiber(root), footer = null, footerFiber = null, box = null;
     while (fiber && (!footer || !box)) {
       const props = fiber.memoizedProps;
-      if (!footer && typeof props?.isConvoInputEmpty === 'boolean') footer = props;
-      if (!box && typeof props?.restoreReviewComments === 'function' && typeof props?.handleSubmit === 'function') box = props;
+      const isFooter = typeof props?.isConvoInputEmpty === 'boolean' || typeof props?.isInputEmpty === 'boolean' ||
+        (typeof props?.handleSubmit === 'function' && props?.lexicalRef && typeof props.lexicalRef === 'object');
+      if (!footer && isFooter) { footer = props; footerFiber = fiber; }
+      else if (!box && fiber !== footerFiber && typeof props?.handleSubmit === 'function' && !props?.lexicalRef) box = props;
       fiber = fiber.return;
     }
     return {footer, submit:box?.handleSubmit ?? null, slashItems:footer?.slashCommandItems ?? box?.slashCommandItems ?? null};
   }
   function composerRoot(element) {
-    return element.closest?.('#antigravity\\.agentSidePanelInputBox') ?? element.closest?.('[data-agent-composer-root]') ?? null;
+    return element.closest?.('#antigravity\\.agentSidePanelInputBox, .surface-composer, [data-agent-composer-root]') ?? null;
+  }
+  function composerHasDraft(element, footer) {
+    if (footer) {
+      if (typeof footer.isConvoInputEmpty === 'boolean' && !footer.isConvoInputEmpty) return true;
+      if (typeof footer.isInputEmpty === 'boolean' && !footer.isInputEmpty) return true;
+      if (footer.hasAttachments || footer.canSendWithoutText || footer.isUploading ||
+          footer.isFetchingMcpPrompts || (footer.audioPhase && footer.audioPhase !== 'idle')) return true;
+      if (typeof footer.isConvoInputEmpty === 'boolean' || typeof footer.isInputEmpty === 'boolean') return false;
+    }
+    const editor = composerRoot(element)?.querySelector?.('[contenteditable="true"]');
+    return Boolean(editor?.textContent?.trim());
   }
   function clientCache(client) {
     let cache = clients.get(client);
@@ -2035,7 +2060,7 @@
     if (instance.compactingPending || state?.compacting === true) {
       return {enabled:false, busy:true, reason:'正在压缩对话历史…'};
     }
-    if (!submit || !itemSchema || !createMessage) {
+    if (typeof submit !== 'function') {
       return {enabled:false, busy:false, reason:'当前窗口的压缩接口不可用'};
     }
     if (footer?.isSubagent) {
@@ -2047,8 +2072,7 @@
     if (state.idle === false || footer?.isRunning || footer?.isConvoLoading || footer?.isCreatingEnvironment) {
       return {enabled:false, busy:false, reason:'代理正在运行中，请等待完成后再压缩'};
     }
-    if (footer && (!footer.isConvoInputEmpty || footer.hasAttachments || footer.canSendWithoutText ||
-        footer.isUploading || footer.isFetchingMcpPrompts || (footer.audioPhase && footer.audioPhase !== 'idle'))) {
+    if (composerHasDraft(instance.anchor, footer)) {
       return {enabled:false, busy:false, reason:'输入框中有未发送内容，请先发送或清空后再压缩'};
     }
     if (footer?.sendBlock?.reason) {

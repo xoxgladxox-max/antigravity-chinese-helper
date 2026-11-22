@@ -1045,7 +1045,14 @@ test('compact action guards empty conversations, busy runs, and unsent drafts be
   assert.equal(submitted[0].items[0].$typeName, 'exa.codeium_common_pb.TextOrScopeItem');
   assert.deepEqual(JSON.parse(JSON.stringify(submitted[0].items[0].chunk)), {
     case:'item',
-    value:{scopeItem:{case:'slashCommand', value:{info:compactInfo, argumentValues:{}}}}
+    value:{
+      $typeName:'exa.codeium_common_pb.ContextScopeItem',
+      scopeItem:{case:'slashCommand', value:{
+        $typeName:'exa.codeium_common_pb.SlashCommandScopeItem',
+        info:compactInfo,
+        argumentValues:{}
+      }}
+    }
   });
 
   f.emit({...state('A', 1), fullyIdle:false, activeHook:{hookName:'context_summary'}});

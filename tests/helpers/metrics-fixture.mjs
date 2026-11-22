@@ -132,8 +132,8 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
     matches:selector => selector === '[data-testid="model-selector-trigger"]',
     getAttribute:() => null,
     closest:selector => selector === '[data-cascade-id]' ? {getAttribute:() => viewId}
-      : composer && selector === '[data-agent-composer-root]' ? footerElement
-      : composer && selector === '#antigravity\\.agentSidePanelInputBox' ? composerElement : null,
+      : composer && selector.includes('agentSidePanelInputBox') ? composerElement
+      : composer && selector.includes('[data-agent-composer-root]') ? footerElement : null,
     after(host) { assert.equal(host, view.host); },
     __reactFiber$fixture:bailedOutAnchorFiber
   };

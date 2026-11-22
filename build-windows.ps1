@@ -20,12 +20,10 @@ if (-not (Test-Path -LiteralPath $rendererPath)) {
 }
 
 $rendererContent = [System.IO.File]::ReadAllText($rendererPath, [System.Text.Encoding]::UTF8)
-$versionMatch = [System.Text.RegularExpressions.Regex]::Match($rendererContent, "(?m)^\s*const VERSION = '([0-9]+(?:\.[0-9]+){1,3})';\s*$")
-if (-not $versionMatch.Success) {
-    throw (U "\u65e0\u6cd5\u4ece runtime/renderer.js \u8bfb\u53d6\u7248\u672c\u53f7\u3002")
-}
-$appVersion = $versionMatch.Groups[1].Value
-$versionParts = $appVersion.Split('.')
+$versionMatch = [System.Text.RegularExpressions.Regex]::Match($rendererContent, "(?m)^\s*const VERSION = '([^']+)';\s*$")
+$appVersion = if ($versionMatch.Success) { $versionMatch.Groups[1].Value } else { '0.0.0' }
+$numericMatch = [System.Text.RegularExpressions.Regex]::Match($appVersion, '[0-9]+(?:\.[0-9]+){0,3}')
+$versionParts = if ($numericMatch.Success) { @($numericMatch.Value.Split('.')) } else { @('0', '0', '0', '0') }
 while ($versionParts.Count -lt 4) {
     $versionParts += '0'
 }

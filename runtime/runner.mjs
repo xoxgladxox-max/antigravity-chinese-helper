@@ -15,13 +15,17 @@ const stateDir = process.env.ANTIGRAVITY_HELPER_STATE_DIR
     ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'AntigravityChineseHelper')
     : join(homedir(), 'Library/Application Support/AntigravityChineseHelper'));
 
-function windowsPipePath(directory) {
+function fnv1aHex(text) {
   let hash = 0xcbf29ce484222325n;
-  for (const ch of directory.toLowerCase()) {
+  for (const ch of text) {
     hash ^= BigInt(ch.codePointAt(0));
     hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
   }
-  return `\\\\.\\pipe\\antigravity-chinese-helper-${hash.toString(16).padStart(16, '0')}`;
+  return hash.toString(16).padStart(16, '0');
+}
+
+function windowsPipePath(directory) {
+  return `\\\\.\\pipe\\antigravity-chinese-helper-${fnv1aHex(directory.toLowerCase())}`;
 }
 
 const socketPath = isWindows ? windowsPipePath(stateDir) : join(stateDir, 'helper.sock');
@@ -209,18 +213,22 @@ async function loadBundle() {
   const dictionary = JSON.parse(dictionaryText);
   if (!dictionary || typeof dictionary !== 'object') throw new Error('Dictionary must be an object or array');
   const rendererVersion = source.match(/\bconst VERSION = '([^']+)';/)?.[1];
+  const sourceHash = fnv1aHex(source);
   const expression = `(fallbackTitles => {
     const install = () => {
       if (!(${knownApp})) return;
       if (${CONTEXT_OVERRIDES_ENABLED}) (${installBackendBridge.toString()})();
       else globalThis.${backendBridgeKey}?.dispose();
       const existing = globalThis.${helperKey};
-      if (existing?.version === ${JSON.stringify(rendererVersion)} && existing?.contextOverridesEnabled === ${CONTEXT_OVERRIDES_ENABLED}) {
+      if (existing?.version === ${JSON.stringify(rendererVersion)} && existing?.sourceHash === ${JSON.stringify(sourceHash)} && existing?.contextOverridesEnabled === ${CONTEXT_OVERRIDES_ENABLED}) {
         existing.setFallbackTitles(fallbackTitles);
         return;
       }
       if (existing) { existing.uninstall?.(); delete globalThis.${helperKey}; }
-      globalThis.${helperKey} = (${source.trim().replace(/;\s*$/, '')})(${JSON.stringify(dictionary)}, {contextOverridesEnabled:${CONTEXT_OVERRIDES_ENABLED}, fallbackTitles});
+      const created = (${source.trim().replace(/;\s*$/, '')}
+      )(${JSON.stringify(dictionary)}, {contextOverridesEnabled:${CONTEXT_OVERRIDES_ENABLED}, fallbackTitles});
+      if (created && typeof created === 'object') created.sourceHash = ${JSON.stringify(sourceHash)};
+      globalThis.${helperKey} = created;
     };
     if (location.protocol !== 'https:' || location.hostname !== '127.0.0.1' || globalThis.top !== globalThis) return;
     install();

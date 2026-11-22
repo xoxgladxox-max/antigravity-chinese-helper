@@ -157,6 +157,20 @@ test('renderer source changes replace the helper and manual dictionary reload st
   assert.strictEqual(f.current.__antigravityChineseHelper, replacement);
   assert.equal(f.current.uninstalls, 1);
   assert.equal(f.scripts.size, 1);
+
+  // Changing renderer code without bumping VERSION still hot-replaces an ensured window via sourceHash.
+  f.files.source = f.files.source + ' /* patched without touching VERSION */';
+  f.files.sourceMtime++;
+  await f.reload();
+  assert.equal(f.current.installs, 3);
+  assert.equal(f.current.uninstalls, 2);
+
+  // Even an ensure() call against an older helper sharing the same VERSION replaces it when sourceHash differs.
+  f.current.__antigravityChineseHelper = {version:'fixture-2', contextOverridesEnabled:false, sourceHash:'stale',
+    setFallbackTitles() {}, uninstall() { f.current.uninstalls++; }};
+  await f.ensure();
+  assert.equal(f.current.installs, 4);
+  assert.equal(f.current.uninstalls, 3);
 });
 
 test('an invalid dictionary leaves both the current helper and navigation script intact', async () => {
