@@ -1197,7 +1197,10 @@
   }
   function quotaValues(instance, modelLabel) {
     const selected = instance.selected;
-    const family = quotaFamily(selected?.label) ?? (!selected || selected.modelAlias ? quotaFamily(modelLabel) : null);
+    const routingModel = !selected || selected.modelAlias || (selected.label === 'Orchestrator' && !selected.isCustom);
+    const family = quotaFamily(selected?.label)
+      ?? quotaFamily(instance.anchor.textContent)
+      ?? (routingModel ? quotaFamily(modelLabel) : null);
     const buckets = (instance.quotaHub?.groups ?? []).flatMap(group => group.buckets.filter(bucket =>
       family === 'gemini' ? bucket.bucketId.startsWith('gemini-') : family === '3p' ? bucket.bucketId.startsWith('3p-') : false));
     return {weeklyQuota:buckets.find(bucket => bucket.window === 'weekly') ?? null,

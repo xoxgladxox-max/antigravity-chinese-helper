@@ -40,7 +40,7 @@ function state(id, generation, {stepUsage, costSummary} = {}) {
 }
 
 function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, config, stored = {}, save, load, windowGlobals = {}, client: suppliedClient,
-  childStates = {}, byParent = {}, summaries = {}, contextOverridesEnabled = true} = {}) {
+  childStates = {}, byParent = {}, summaries = {}, contextOverridesEnabled = true, selected:initialSelected = null, anchorText = '', quotaGroups = null} = {}) {
   let current = initial;
   let viewId = initial?.conversationId;
   const listeners = new Set();
@@ -48,7 +48,7 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
   const storeListeners = new Set();
   const childListeners = new Map(), childProviders = new Map(), registryActive = new Map();
   const calls = {metadata:[], catalog:0, catalogRequests:[], config:0, resolved:[], sent:[], saved:[], subscribed:[], unsubscribed:[]};
-  const selected = {value:model, label:'Gemini Fixture'};
+  const selected = initialSelected ? {...initialSelected} : {value:model, label:'Gemini Fixture'};
   let actions;
   const provider = {
     getState:() => current,
@@ -113,8 +113,11 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
     dispose() { this.disposed = true; }
   });
   let view = createView();
+  const cloudCodeService = quotaGroups ? {retrieveUserQuotaSummary:async () => ({response:{groups:quotaGroups}})} : null;
   let anchor = {
     isConnected:true,
+    textContent:anchorText,
+    contains:target => target === anchor,
     matches:selector => selector === '[data-testid="model-selector-trigger"]',
     getAttribute:() => null,
     closest:selector => selector === '[data-cascade-id]' ? {getAttribute:() => viewId} : null,
@@ -122,7 +125,7 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
     __reactFiber$fixture:{memoizedProps:{value:{
       cascadeContext:{state:{agentStateProvider:provider}}, selectedModel:selected
     }}, return:{memoizedProps:{value:{store}}, return:{memoizedProps:{value:registry},
-      return:{memoizedProps:{services:{core:{authService:{_lsClient:client}}}}, return:null}}}}
+      return:{memoizedProps:{services:{core:{authService:{_lsClient:client}, cloudCodeService}}}, return:null}}}}
   };
   const storage = {...stored};
   const nativeStorage = {
@@ -172,7 +175,12 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
       controller.discover(anchor);
     },
     setLimit:tokens => actions.setContextLimit?.(tokens) ?? false,
-    select(value, label = String(value)) { selected.value = value; selected.label = label; controller.discover(anchor); },
+    setAnchorText(text) { anchor.textContent = text; controller.discover(anchor); },
+    select(value, label = String(value), extra = {}) {
+      for (const k of Object.keys(selected)) delete selected[k];
+      Object.assign(selected, {value, label, ...extra});
+      controller.discover(anchor);
+    },
     emit(next = current, id = next.conversationId ?? viewId) { current = next; viewId = id; for (const listener of listeners) listener(); },
     emitChild(id, next = childStates[id]) {
       childStates[id] = next;

@@ -999,3 +999,41 @@ test('disabled context overrides ignore saved budgets and preserve native sends 
     assert.equal(request.cascadeConfig.checkpointConfig, undefined);
   }
 });
+
+test('quotaValues resolves Orchestrator planner quotas via trigger text and history fallback while isolating custom models', async t => {
+  const quotaGroups = [
+    {buckets:[
+      {bucketId:'gemini-5h', window:'5h', remaining:{case:'remainingFraction', value:0.8}, resetTime:{seconds:1800000000}},
+      {bucketId:'gemini-weekly', window:'weekly', remaining:{case:'remainingFraction', value:0.6}, resetTime:{seconds:1800100000}},
+      {bucketId:'3p-5h', window:'5h', remaining:{case:'remainingFraction', value:0.4}, resetTime:{seconds:1800000000}},
+      {bucketId:'3p-weekly', window:'weekly', remaining:{case:'remainingFraction', value:0.2}, resetTime:{seconds:1800100000}}
+    ]}
+  ];
+  const f = fixture(state('A', 0), {
+    contextOverridesEnabled:false,
+    selected:{label:'Orchestrator', isCustom:false},
+    anchorText:'Orchestrator Gemini 4 Neon 高',
+    quotaGroups,
+    metadata:() => ({generatorMetadata:[record(0, {modelDisplayName:'Gemini 4 Neon'})]})
+  });
+  t.after(() => f.controller.dispose());
+  f.mount(); await settle();
+  assert.equal(f.snapshot().fiveHourQuota.remainingFraction, 0.8);
+  assert.equal(f.snapshot().weeklyQuota.remainingFraction, 0.6);
+
+  f.setAnchorText('编排器 Claude Sonnet 5.5 高');
+  await settle();
+  assert.equal(f.snapshot().fiveHourQuota.remainingFraction, 0.4);
+  assert.equal(f.snapshot().weeklyQuota.remainingFraction, 0.2);
+
+  f.setAnchorText("Orchestrator The Orchestrator's own planner");
+  f.emit(state('A', 1)); await settle();
+  assert.equal(f.snapshot().fiveHourQuota.remainingFraction, 0.8);
+  assert.equal(f.snapshot().weeklyQuota.remainingFraction, 0.6);
+
+  f.select(9999, 'MyLocalLlama', {isCustom:true});
+  f.setAnchorText('MyLocalLlama');
+  await settle();
+  assert.equal(f.snapshot().fiveHourQuota, null);
+  assert.equal(f.snapshot().weeklyQuota, null);
+});
