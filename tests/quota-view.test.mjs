@@ -416,6 +416,13 @@ test('compaction summary dialog renders LimCode-style metadata, summary text, sw
   assert.equal(dialog.hidden, false);
   assert.deepEqual(selectedCalls, [{step:24, options:undefined}]);
 
+  // Arriving new compaction while the dialog is open should automatically trigger loading it.
+  f.view.update({
+    compact:{enabled:true, busy:false, justCompacted:true, reason:'刚刚已完成上下文压缩'},
+    compactions:{steps:[10, 24, 30], selectedStep:30, entry:{status:'idle', stepIndex:30}}
+  });
+  assert.deepEqual(selectedCalls.at(-1), {step:30, options:undefined});
+
   f.view.update({
     compact:{enabled:true, busy:false, justCompacted:false, reason:'点击立即压缩当前对话历史'},
     compactions:{steps:[10, 24], selectedStep:24, entry:{

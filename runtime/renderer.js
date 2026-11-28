@@ -860,17 +860,13 @@
       } : null,
     };
   }
+  const compactionEntryKeys = ['status', 'stepIndex', 'checkpointIndex', 'includedStart', 'includedEnd',
+    'intentOnly', 'failed', 'fallback', 'sessionSummary', 'userIntent', 'codeChangeSummary', 'memorySummary', 'createdAtMs', 'error'];
   const sameUsage = (a, b) => a === b || Boolean(a && b && a.input === b.input && a.cache === b.cache && a.output === b.output);
   const sameCompactions = (a, b) => Boolean(a && b && a.selectedStep === b.selectedStep &&
     a.steps.length === b.steps.length && a.steps.every((step, i) => step === b.steps[i]) &&
     (a.entry === b.entry || Boolean(a.entry && b.entry &&
-      a.entry.status === b.entry.status && a.entry.stepIndex === b.entry.stepIndex &&
-      a.entry.checkpointIndex === b.entry.checkpointIndex &&
-      a.entry.includedStart === b.entry.includedStart && a.entry.includedEnd === b.entry.includedEnd &&
-      a.entry.intentOnly === b.entry.intentOnly && a.entry.failed === b.entry.failed && a.entry.fallback === b.entry.fallback &&
-      a.entry.sessionSummary === b.entry.sessionSummary && a.entry.userIntent === b.entry.userIntent &&
-      a.entry.codeChangeSummary === b.entry.codeChangeSummary && a.entry.memorySummary === b.entry.memorySummary &&
-      a.entry.createdAtMs === b.entry.createdAtMs && a.entry.error === b.entry.error &&
+      compactionEntryKeys.every(key => a.entry[key] === b.entry[key]) &&
       sameUsage(a.entry.usage, b.entry.usage))));
   function renderCompactionsView(compactions) {
     const count = compactions.steps.length;
@@ -883,26 +879,25 @@
     }
     writeText(summaryButton, count > 1 ? `摘要 ${count}` : '摘要');
     const selectedIndex = compactions.steps.indexOf(compactions.selectedStep);
-    const ordinal = selectedIndex >= 0 ? selectedIndex + 1 : count;
+    const ordinal = selectedIndex + 1;
     const entry = compactions.entry;
     const status = entry?.status ?? 'idle';
     summaryPrev.hidden = count <= 1;
     summaryNext.hidden = count <= 1;
-    summaryPrev.disabled = selectedIndex <= 0;
-    summaryNext.disabled = selectedIndex < 0 || selectedIndex >= count - 1;
+    summaryPrev.disabled = selectedIndex === 0;
+    summaryNext.disabled = selectedIndex === count - 1;
     const checkpointPart = entry?.checkpointIndex ? `检查点 #${entry.checkpointIndex}` : '';
     const rangePart = entry?.includedStart != null && entry?.includedEnd != null
       ? `步骤 ${entry.includedStart}–${entry.includedEnd}`
-      : typeof compactions.selectedStep === 'number' ? `步骤 #${compactions.selectedStep}` : '';
-    const subtitleParts = [`第 ${ordinal} / ${count} 次`, checkpointPart, rangePart].filter(Boolean);
-    writeText(summarySubtitle, subtitleParts.join(' · '));
+      : `步骤 #${compactions.selectedStep}`;
+    writeText(summarySubtitle, [`第 ${ordinal} / ${count} 次`, checkpointPart, rangePart].filter(Boolean).join(' · '));
     writeAttribute(summaryState, 'data-state', status === 'error' ? 'error' : status === 'loading' ? 'loading' : 'ready');
     writeText(summaryState, status === 'error' ? '读取失败' : status === 'loading' ? '读取中' : entry?.failed ? '摘要失败' : '已完成');
     writeText(summaryMeta.record, checkpointPart ? `${checkpointPart}（第 ${ordinal} / ${count} 次）` : `第 ${ordinal} / ${count} 次`);
     writeText(summaryMeta.createdAt, formatCompactionTime(entry?.createdAtMs));
     writeText(summaryMeta.steps, entry?.includedStart != null && entry?.includedEnd != null
       ? `步骤 ${entry.includedStart} – ${entry.includedEnd}（共 ${Math.max(0, entry.includedEnd - entry.includedStart + 1)} 步）`
-      : typeof compactions.selectedStep === 'number' ? `步骤 #${compactions.selectedStep}` : '—');
+      : `步骤 #${compactions.selectedStep}`);
     const modeText = !entry || status !== 'ready' ? '—'
       : entry.failed ? '模型摘要失败'
       : entry.fallback ? '备用摘要'
@@ -919,6 +914,7 @@
     else writeText(summaryContent, '点击“摘要”按需读取该次压缩内容…');
     summaryCopy.disabled = !text;
     summaryRetry.hidden = status !== 'error';
+    if (summaryCard.open && status === 'idle') void actions.selectCompaction?.(compactions.selectedStep);
   }
   function update(snapshot) {
     if (disposed) return false;
@@ -1006,7 +1002,6 @@
       disposed = true;
       window.clearTimeout(applyFeedbackTimer);
       window.clearTimeout(copyFeedbackTimer);
-      window.clearTimeout(quotaResetTimer);
       metricsResize.disconnect();
       for (const remove of permanentListeners) remove();
       permanentListeners.length = 0;
@@ -1587,11 +1582,10 @@
   }
   function quotaValues(instance, modelLabel) {
     const selected = instance.selected;
-    const triggerLabel = typeof instance.anchor?.textContent === 'string' ? instance.anchor.textContent.trim() : '';
-    const canFallbackToHistory = !selected || selected.modelAlias || (!selected.isCustom && /^orchestrator$/i.test(selected.label ?? ''));
+    const routingModel = !selected || selected.modelAlias || (selected.label === 'Orchestrator' && !selected.isCustom);
     const family = quotaFamily(selected?.label)
-      ?? quotaFamily(triggerLabel)
-      ?? (canFallbackToHistory ? quotaFamily(modelLabel) : null);
+      ?? quotaFamily(instance.anchor.textContent)
+      ?? (routingModel ? quotaFamily(modelLabel) : null);
     const buckets = (instance.quotaHub?.groups ?? []).flatMap(group => group.buckets.filter(bucket =>
       family === 'gemini' ? bucket.bucketId.startsWith('gemini-') : family === '3p' ? bucket.bucketId.startsWith('3p-') : false));
     return {weeklyQuota:buckets.find(bucket => bucket.window === 'weekly') ?? null,
@@ -1731,7 +1725,7 @@
     let fiber = currentFiber(root), footer = null, footerFiber = null, box = null;
     while (fiber && (!footer || !box)) {
       const props = fiber.memoizedProps;
-      const isFooter = typeof props?.isConvoInputEmpty === 'boolean' || typeof props?.isInputEmpty === 'boolean' ||
+      const isFooter = typeof props?.isConvoInputEmpty === 'boolean' ||
         (typeof props?.handleSubmit === 'function' && props?.lexicalRef && typeof props.lexicalRef === 'object');
       if (!footer && isFooter) { footer = props; footerFiber = fiber; }
       else if (!box && fiber !== footerFiber && typeof props?.handleSubmit === 'function' && !props?.lexicalRef) box = props;
@@ -1745,10 +1739,9 @@
   function composerHasDraft(element, footer) {
     if (footer) {
       if (typeof footer.isConvoInputEmpty === 'boolean' && !footer.isConvoInputEmpty) return true;
-      if (typeof footer.isInputEmpty === 'boolean' && !footer.isInputEmpty) return true;
       if (footer.hasAttachments || footer.canSendWithoutText || footer.isUploading ||
           footer.isFetchingMcpPrompts || (footer.audioPhase && footer.audioPhase !== 'idle')) return true;
-      if (typeof footer.isConvoInputEmpty === 'boolean' || typeof footer.isInputEmpty === 'boolean') return false;
+      if (typeof footer.isConvoInputEmpty === 'boolean') return false;
     }
     const editor = composerRoot(element)?.querySelector?.('[contenteditable="true"]');
     return Boolean(editor?.textContent?.trim());
@@ -2201,7 +2194,7 @@
   }
   function clearCompactedNotice(instance) {
     if (instance.compactedNoticeTimer !== null) {
-      appWindow?.clearTimeout?.(instance.compactedNoticeTimer);
+      appWindow.clearTimeout(instance.compactedNoticeTimer);
       instance.compactedNoticeTimer = null;
     }
   }
@@ -2211,6 +2204,36 @@
     instance.selectedCompactionStep = null;
     instance.compactionTrackedId = null;
     instance.knownCompactedCount = null;
+  }
+  function syncCompactions(instance, next) {
+    if (!next.hasTrajectory || !next.id || next.id === '_new') {
+      resetCompactions(instance);
+      return;
+    }
+    if (instance.compactionTrackedId !== next.id) {
+      resetCompactions(instance);
+      instance.compactionTrackedId = next.id;
+      instance.knownCompactedCount = next.compactedSteps.length;
+      instance.selectedCompactionStep = next.compactedSteps.at(-1) ?? null;
+      return;
+    }
+    if (next.compactedSteps.length > instance.knownCompactedCount) {
+      instance.knownCompactedCount = next.compactedSteps.length;
+      const latest = next.compactedSteps.at(-1);
+      instance.compactionCache.delete(`${next.id}:${latest}`);
+      instance.selectedCompactionStep = latest;
+      clearCompactedNotice(instance);
+      instance.compactedNoticeTimer = appWindow.setTimeout(() => {
+        instance.compactedNoticeTimer = null;
+        if (!stopped && !instance.disposed) render(instance);
+      }, 3000);
+    } else if (next.compactedSteps.length < instance.knownCompactedCount) {
+      instance.knownCompactedCount = next.compactedSteps.length;
+      instance.compactionCache.clear();
+    }
+    if (!next.compactedSteps.includes(instance.selectedCompactionStep)) {
+      instance.selectedCompactionStep = next.compactedSteps.at(-1) ?? null;
+    }
   }
   function disposeSubscription(subscription) {
     if (typeof subscription === 'function') subscription();
@@ -2464,13 +2487,14 @@
       return entry;
     }
     const epoch = instance.epoch;
-    instance.compactionCache.set(key, {status:'loading', stepIndex:targetStep, error:null});
+    const pending = {status:'loading', stepIndex:targetStep, error:null};
+    instance.compactionCache.set(key, pending);
     render(instance);
     try {
       const response = await instance.client.getCascadeTrajectorySteps({cascadeId, stepOffset:targetStep, trajectoryVerbosity:3});
-      if (!valid(instance, epoch) || instance.state?.id !== cascadeId) return null;
+      if (!valid(instance, epoch) || instance.state?.id !== cascadeId || instance.compactionCache.get(key) !== pending) return null;
       const list = response?.steps ?? [];
-      const matched = list[0]?.step?.case === 'checkpoint' ? list[0] : list.find(item => item?.step?.case === 'checkpoint');
+      const matched = list[0]?.step?.case === 'checkpoint' ? list[0] : null;
       const parsed = parseCheckpointStep(matched, targetStep);
       const entry = parsed
         ? {status:'ready', ...parsed, error:null}
@@ -2479,7 +2503,7 @@
       render(instance);
       return entry;
     } catch {
-      if (!valid(instance, epoch) || instance.state?.id !== cascadeId) return null;
+      if (!valid(instance, epoch) || instance.state?.id !== cascadeId || instance.compactionCache.get(key) !== pending) return null;
       const entry = {status:'error', stepIndex:targetStep, error:'读取压缩摘要失败，请点击重试'};
       instance.compactionCache.set(key, entry);
       render(instance);
@@ -2493,7 +2517,6 @@
     const {submit, slashItems} = composerBindings(instance.anchor);
     const info = slashItems?.find(entry => entry?.info?.name === 'compact')?.info;
     const item = createCompactItem(info);
-    if (!item || typeof submit !== 'function') return false;
     instance.compactingPending = true;
     render(instance);
     try {
@@ -2712,33 +2735,7 @@
       releaseSubagents(instance); instance.config = null; resetCompactions(instance);
     }
     updateHistory(instance, instance, next);
-    if (!next.hasTrajectory || !next.id || next.id === '_new') {
-      resetCompactions(instance);
-    } else if (instance.compactionTrackedId !== next.id) {
-      instance.compactionTrackedId = next.id;
-      instance.knownCompactedCount = next.compactedSteps.length;
-      instance.selectedCompactionStep = next.compactedSteps.at(-1) ?? null;
-    } else {
-      if (next.compactedSteps.length > instance.knownCompactedCount) {
-        instance.knownCompactedCount = next.compactedSteps.length;
-        const latest = next.compactedSteps.at(-1);
-        instance.compactionCache.delete(`${next.id}:${latest}`);
-        instance.selectedCompactionStep = latest;
-        clearCompactedNotice(instance);
-        if (typeof appWindow?.setTimeout === 'function') {
-          instance.compactedNoticeTimer = appWindow.setTimeout(() => {
-            instance.compactedNoticeTimer = null;
-            if (!stopped && !instance.disposed) render(instance);
-          }, 3000);
-        }
-      } else if (next.compactedSteps.length < instance.knownCompactedCount) {
-        instance.knownCompactedCount = next.compactedSteps.length;
-        instance.compactionCache.clear();
-      }
-      if (!next.compactedSteps.includes(instance.selectedCompactionStep)) {
-        instance.selectedCompactionStep = next.compactedSteps.at(-1) ?? null;
-      }
-    }
+    syncCompactions(instance, next);
     syncSubagents(instance);
     const quotaEvent = `${next.id}:${next.generation}:${next.idle}`;
     if (instance.quotaEvent !== quotaEvent) {
