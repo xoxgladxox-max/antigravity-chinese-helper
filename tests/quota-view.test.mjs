@@ -338,3 +338,130 @@ test('disabled context controls leave only native usage and quota displays', t =
   assert.equal(f.row('context','压缩阈值'), '512.00K');
   assert.equal(f.row('context','使用比例'), '25%');
 });
+
+test('compact button mounts right after weekly quota, explains disabled reasons, triggers native compact, and cleans up', t => {
+  let clicks = 0;
+  const f = fixture(undefined, {contextOverridesEnabled:false, actions:{compactConversation:() => { clicks++; }}});
+  t.after(() => f.view.dispose());
+  const shadowChildren = f.view.host.shadowRoot.children;
+  const weeklyItem = f.elements.find(element => element.dataset.ring === 'weekly').parentElement;
+  const button = f.element('context-compact-button');
+  const status = f.element('context-compact-status');
+  const tooltip = f.elements.find(element => element.id === 'context-compact-tooltip');
+  assert.equal(shadowChildren.indexOf(button.parentElement), shadowChildren.indexOf(weeklyItem) + 1,
+    'compact button sits immediately to the right of the weekly quota ring');
+  assert.equal(button.disabled, true);
+
+  f.view.update({compact:{enabled:false, busy:false, reason:'输入框中有未发送内容，请先发送或清空后再压缩'}});
+  button.parentElement.emit('pointerenter');
+  assert.equal(tooltip.hidden, false, 'hovering a disabled compact wrapper still shows the reason tooltip');
+  assert.equal(status.textContent, '输入框中有未发送内容，请先发送或清空后再压缩');
+  const blockedClick = button.emit('click', {bubbles:true});
+  assert.equal(blockedClick.propagationStopped, true);
+  assert.equal(clicks, 0);
+
+  f.view.update({compact:{enabled:true, busy:false, reason:'点击立即压缩当前对话历史'}});
+  assert.equal(button.disabled, false);
+  assert.equal(button.children[0].textContent, '压缩');
+  button.emit('click', {bubbles:true});
+  assert.equal(clicks, 1);
+
+  f.view.update({compact:{enabled:false, busy:true, reason:'正在压缩对话历史…'}});
+  assert.equal(button.disabled, true);
+  assert.equal(button.getAttribute('data-busy'), 'true');
+  assert.equal(button.children[0].textContent, '压缩中');
+  button.emit('click', {bubbles:true});
+  assert.equal(clicks, 1, 'busy compact button rejects duplicate clicks');
+
+  f.view.dispose();
+  assert.equal(tooltip.hidden, true);
+  assert.equal(f.view.host.isConnected, false);
+});
+
+test('compaction summary dialog renders LimCode-style metadata, summary text, switching, copy feedback, and error retry', async t => {
+  const selectedCalls = [];
+  const copied = [];
+  const f = fixture(undefined, {
+    contextOverridesEnabled:false,
+    windowGlobals:{navigator:{clipboard:{writeText:async value => { copied.push(value); }}}},
+    actions:{selectCompaction:(step, options) => selectedCalls.push({step, options})}
+  });
+  t.after(() => f.view.dispose());
+
+  const button = f.element('context-compact-button');
+  const summaryButton = f.element('compaction-summary-button');
+  const summaryItem = summaryButton.parentElement;
+  const dialog = f.elements.find(element => element.id === 'context-compaction-summary-dialog');
+  const toggle = f.element('compaction-summary-toggle');
+  const body = f.element('compaction-summary-body');
+  const prev = f.element('compaction-summary-prev');
+  const next = f.element('compaction-summary-next');
+  const content = f.element('compaction-summary-content');
+  const copy = f.element('compaction-summary-copy');
+  const retry = f.element('compaction-summary-retry');
+  const close = f.element('compaction-summary-close');
+
+  assert.equal(summaryItem.hidden, true);
+
+  f.view.update({
+    compact:{enabled:true, busy:false, justCompacted:true, reason:'刚刚已完成上下文压缩'},
+    compactions:{steps:[10, 24], selectedStep:24, entry:{status:'idle', stepIndex:24}}
+  });
+  assert.equal(button.getAttribute('data-done'), 'true');
+  assert.equal(button.children[0].textContent, '已压缩');
+  assert.equal(summaryItem.hidden, false);
+  assert.equal(summaryButton.textContent, '摘要 2');
+
+  summaryButton.emit('click', {bubbles:true});
+  assert.equal(dialog.hidden, false);
+  assert.deepEqual(selectedCalls, [{step:24, options:undefined}]);
+
+  // Arriving new compaction while the dialog is open should automatically trigger loading it.
+  f.view.update({
+    compact:{enabled:true, busy:false, justCompacted:true, reason:'刚刚已完成上下文压缩'},
+    compactions:{steps:[10, 24, 30], selectedStep:30, entry:{status:'idle', stepIndex:30}}
+  });
+  assert.deepEqual(selectedCalls.at(-1), {step:30, options:undefined});
+
+  f.view.update({
+    compact:{enabled:true, busy:false, justCompacted:false, reason:'点击立即压缩当前对话历史'},
+    compactions:{steps:[10, 24], selectedStep:24, entry:{
+      status:'ready', stepIndex:24, checkpointIndex:2, includedStart:10, includedEnd:23,
+      createdAtMs:new Date(2026, 10, 27, 5, 12, 0).getTime(),
+      usage:{input:1500, cache:500, output:200},
+      sessionSummary:'保留核心上下文与任务进度'
+    }}
+  });
+  assert.equal(button.children[0].textContent, '压缩');
+  assert.match(content.textContent, /\[Context Summary\][\s\S]*保留核心上下文与任务进度/);
+  assert.equal(prev.disabled, false);
+  assert.equal(next.disabled, true);
+  assert.equal(copy.disabled, false);
+  assert.equal(retry.hidden, true);
+
+  copy.emit('click', {bubbles:true});
+  await settle();
+  assert.deepEqual(copied, [content.textContent]);
+  assert.equal(copy.textContent, '已复制');
+  f.advance(1800);
+  assert.equal(copy.textContent, '复制压缩内容');
+
+  toggle.emit('click', {bubbles:true});
+  assert.equal(body.hidden, true);
+  toggle.emit('click', {bubbles:true});
+  assert.equal(body.hidden, false);
+
+  prev.emit('click', {bubbles:true});
+  assert.deepEqual(selectedCalls.at(-1), {step:10, options:undefined});
+
+  f.view.update({
+    compactions:{steps:[10, 24], selectedStep:10, entry:{status:'error', stepIndex:10, error:'读取压缩摘要失败'}}
+  });
+  assert.equal(retry.hidden, false);
+  assert.equal(copy.disabled, true);
+  retry.emit('click', {bubbles:true});
+  assert.deepEqual(structuredClone(selectedCalls.at(-1)), {step:10, options:{force:true}});
+
+  close.emit('click', {bubbles:true});
+  assert.equal(dialog.hidden, true);
+});

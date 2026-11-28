@@ -30,24 +30,26 @@ function record(index, overrides = {}) {
   }}};
 }
 
-function state(id, generation, {stepUsage, costSummary} = {}) {
-  return {conversationId:id, fullyIdle:false, costSummary, trajectorySlice:{
-    totalGeneratorMetadataLength:generation,
-    generatorMetadatasInSlice:generation ? [{stepIndices:[generation - 1], plannerConfig:{planModel:model}}] : [],
-    totalStepsLength:generation, stepsSlice:{startIndex:Math.max(0, generation - 1)},
-    stepsInSlice:stepUsage ? [{metadata:{modelUsage:stepUsage}}] : []
-  }};
+function state(id, generation, {stepUsage, costSummary, compactedAtStepIndices, stepsInSlice} = {}) {
+  return {conversationId:id, fullyIdle:false, costSummary,
+    compactionInfo:compactedAtStepIndices ? {compactedAtStepIndices} : undefined,
+    trajectorySlice:{
+      totalGeneratorMetadataLength:generation,
+      generatorMetadatasInSlice:generation ? [{stepIndices:[generation - 1], plannerConfig:{planModel:model}}] : [],
+      totalStepsLength:generation, stepsSlice:{startIndex:Math.max(0, generation - 1)},
+      stepsInSlice:stepsInSlice ?? (stepUsage ? [{metadata:{modelUsage:stepUsage}}] : [])
+    }};
 }
 
-function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, config, stored = {}, save, load, windowGlobals = {}, client: suppliedClient,
-  childStates = {}, byParent = {}, summaries = {}, contextOverridesEnabled = true} = {}) {
+function fixture(initial, {metadata = () => ({generatorMetadata:[]}), steps = () => ({steps:[]}), catalog, config, stored = {}, save, load, windowGlobals = {}, client: suppliedClient,
+  childStates = {}, byParent = {}, summaries = {}, contextOverridesEnabled = true, composer = null} = {}) {
   let current = initial;
   let viewId = initial?.conversationId;
   const listeners = new Set();
   const storageListeners = new Set();
   const storeListeners = new Set();
   const childListeners = new Map(), childProviders = new Map(), registryActive = new Map();
-  const calls = {metadata:[], catalog:0, catalogRequests:[], config:0, resolved:[], sent:[], saved:[], subscribed:[], unsubscribed:[]};
+  const calls = {metadata:[], steps:[], catalog:0, catalogRequests:[], config:0, resolved:[], sent:[], saved:[], subscribed:[], unsubscribed:[]};
   const selected = {value:model, label:'Gemini Fixture'};
   let actions;
   const provider = {
@@ -101,6 +103,10 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
       calls.metadata.push({...request});
       return metadata(request);
     },
+    getCascadeTrajectorySteps(request) {
+      calls.steps.push({...request});
+      return steps(request);
+    },
     async sendUserCascadeMessage(request, options) { calls.sent.push({method:'message', request, options, receiver:this}); return 'message-result'; },
     async sendAllQueuedMessages(request, options) { calls.sent.push({method:'queued', request, options, receiver:this}); return 'queued-result'; }
   };
@@ -113,16 +119,29 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
     dispose() { this.disposed = true; }
   });
   let view = createView();
+  const composerTarget = {nodeType:1};
+  const composerElement = {nodeType:1, contains:target => target === composerTarget};
+  const providerFiber = {memoizedProps:{value:{
+    cascadeContext:{state:{agentStateProvider:provider}}, selectedModel:selected
+  }}, return:{memoizedProps:{value:{store}}, return:{memoizedProps:{value:registry},
+    return:{memoizedProps:{services:{core:{authService:{_lsClient:client}}}}, return:null}}}};
+  const initialFooter = composer ? {...composer.footer} : null;
+  const buildFiber = () => composer ? {
+    get memoizedProps() { return composer.footer; },
+    return:{get memoizedProps() { return {handleSubmit:composer.submit, slashCommandItems:composer.slashItems}; }, return:providerFiber}
+  } : providerFiber;
+  const bailedOutAnchorFiber = composer ? {memoizedProps:initialFooter, return:providerFiber} : providerFiber;
+  const footerElement = composer ? {nodeType:1, __reactFiber$fixture:buildFiber()} : null;
   let anchor = {
     isConnected:true,
+    contains:target => target === anchor,
     matches:selector => selector === '[data-testid="model-selector-trigger"]',
     getAttribute:() => null,
-    closest:selector => selector === '[data-cascade-id]' ? {getAttribute:() => viewId} : null,
+    closest:selector => selector === '[data-cascade-id]' ? {getAttribute:() => viewId}
+      : composer && selector.includes('agentSidePanelInputBox') ? composerElement
+      : composer && selector.includes('[data-agent-composer-root]') ? footerElement : null,
     after(host) { assert.equal(host, view.host); },
-    __reactFiber$fixture:{memoizedProps:{value:{
-      cascadeContext:{state:{agentStateProvider:provider}}, selectedModel:selected
-    }}, return:{memoizedProps:{value:{store}}, return:{memoizedProps:{value:registry},
-      return:{memoizedProps:{services:{core:{authService:{_lsClient:client}}}}, return:null}}}}
+    __reactFiber$fixture:bailedOutAnchorFiber
   };
   const storage = {...stored};
   const nativeStorage = {
@@ -143,16 +162,21 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
     {fieldKind:'scalar', localName:'tokenThreshold', default:0},
     {fieldKind:'scalar', localName:'enabled', default:false}
   ]};
+  const itemSchema = {kind:'message', typeName:'exa.codeium_common_pb.TextOrScopeItem', members:[{kind:'oneof', localName:'chunk'}]};
   const cascadeSchema = {kind:'message', typeName:'exa.cortex_pb.CascadeConfig', fields:[{localName:'checkpointConfig', message:checkpointSchema}]};
-  const sendSchema = {kind:'message', typeName:'exa.language_server_pb.SendUserCascadeMessageRequest', fields:[{localName:'cascadeConfig', message:cascadeSchema}]};
-  function createNativeMessage(schema) {
+  const sendSchema = {kind:'message', typeName:'exa.language_server_pb.SendUserCascadeMessageRequest', fields:[
+    {localName:'items', message:itemSchema},
+    {localName:'cascadeConfig', message:cascadeSchema}
+  ]};
+  function createNativeMessage(schema, init) {
     const defaults = {};
     for (const field of schema.members) if (field.fieldKind === 'scalar') defaults[field.localName] = field.default;
     const message = Object.create(defaults);
     message.$typeName = schema.typeName;
+    if (init) Object.assign(message, init);
     return message;
   }
-  const document = {defaultView:{...windowGlobals, nativeStorage, sendSchema, createNativeMessage}};
+  const document = {defaultView:{setTimeout, clearTimeout, ...windowGlobals, nativeStorage, sendSchema, createNativeMessage}};
   const create = vm.runInNewContext(controllerSource, {queueMicrotask});
   const controller = create(document, (_document, _anchor, callbacks) => {
     actions = callbacks;
@@ -164,14 +188,19 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
     mount:() => controller.discover(anchor),
     remount() { anchor.isConnected = false; controller.cleanup(); anchor = {...anchor,isConnected:true}; controller.discover(anchor); },
     rebindProvider() {
-      anchor.__reactFiber$fixture.memoizedProps.value.cascadeContext.state.agentStateProvider = {...provider};
+      providerFiber.memoizedProps.value.cascadeContext.state.agentStateProvider = {...provider};
       controller.discover(anchor);
     },
     useClient(value) {
-      anchor.__reactFiber$fixture.return.return.return.memoizedProps.services.core.authService._lsClient = value;
+      providerFiber.return.return.return.memoizedProps.services.core.authService._lsClient = value;
       controller.discover(anchor);
     },
     setLimit:tokens => actions.setContextLimit?.(tokens) ?? false,
+    compact:() => actions.compactConversation?.() ?? false,
+    selectCompaction:(stepIndex, options) => actions.selectCompaction?.(stepIndex, options) ?? null,
+    mutateComposer() {
+      controller.mutations([{type:'childList', target:composerTarget}]);
+    },
     select(value, label = String(value)) { selected.value = value; selected.label = label; controller.discover(anchor); },
     emit(next = current, id = next.conversationId ?? viewId) { current = next; viewId = id; for (const listener of listeners) listener(); },
     emitChild(id, next = childStates[id]) {

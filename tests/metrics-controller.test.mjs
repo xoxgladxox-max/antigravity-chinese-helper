@@ -999,3 +999,122 @@ test('disabled context overrides ignore saved budgets and preserve native sends 
     assert.equal(request.cascadeConfig.checkpointConfig, undefined);
   }
 });
+
+test('compact action guards empty conversations, busy runs, and unsent drafts before submitting /compact', async t => {
+  const send = deferred();
+  const submitted = [];
+  const compactInfo = {$typeName:'exa.codeium_common_pb.SlashCommandInfo', name:'compact', type:1};
+  const composer = {
+    footer:{isConvoInputEmpty:true, hasAttachments:false, canSendWithoutText:false, isRunning:false,
+      isConvoLoading:false, inExistingConversation:false, audioPhase:'idle', slashCommandItems:[{info:compactInfo}]},
+    slashItems:[{info:compactInfo}],
+    submit:(items, media, clearEditor) => { submitted.push({items, media, clearEditor}); return send.promise; }
+  };
+  const f = fixture({conversationId:'_new', fullyIdle:true, trajectorySlice:null}, {
+    contextOverridesEnabled:false, composer, metadata:() => ({generatorMetadata:[record(0)]})
+  });
+  t.after(() => f.controller.dispose());
+  f.mount(); await settle();
+  assert.equal(f.snapshot().compact.enabled, false);
+  assert.match(f.snapshot().compact.reason, /尚无对话记录/);
+  assert.equal(await f.compact(), false);
+  assert.equal(submitted.length, 0);
+
+  composer.footer = {...composer.footer, inExistingConversation:true, isRunning:true};
+  f.emit(state('A', 1)); await settle();
+  assert.equal(f.snapshot().compact.enabled, false);
+  assert.match(f.snapshot().compact.reason, /正在运行中/);
+
+  composer.footer = {...composer.footer, isRunning:false, isConvoInputEmpty:false};
+  f.emit({...state('A', 1), fullyIdle:true}); await settle();
+  assert.equal(f.snapshot().compact.enabled, false);
+  assert.match(f.snapshot().compact.reason, /未发送内容/);
+  assert.equal(await f.compact(), false, 'must never submit /compact over an unsent user draft');
+  assert.equal(submitted.length, 0);
+
+  composer.footer = {...composer.footer, isConvoInputEmpty:true};
+  f.mutateComposer(); await settle();
+  assert.equal(f.snapshot().compact.enabled, true);
+
+  const pendingCompact = f.compact();
+  assert.equal(f.snapshot().compact.busy, true);
+  assert.equal(f.snapshot().compact.enabled, false);
+  assert.equal(submitted.length, 1);
+  assert.deepEqual(Array.from(submitted[0].media), []);
+  assert.equal(submitted[0].items.length, 1);
+  assert.equal(submitted[0].items[0].$typeName, 'exa.codeium_common_pb.TextOrScopeItem');
+  assert.deepEqual(structuredClone(submitted[0].items[0].chunk), {
+    case:'item',
+    value:{
+      $typeName:'exa.codeium_common_pb.ContextScopeItem',
+      scopeItem:{case:'slashCommand', value:{
+        $typeName:'exa.codeium_common_pb.SlashCommandScopeItem',
+        info:compactInfo,
+        argumentValues:{}
+      }}
+    }
+  });
+
+  f.emit({...state('A', 1), fullyIdle:false, activeHook:{hookName:'context_summary'}});
+  send.resolve();
+  assert.equal(await pendingCompact, true);
+  await settle();
+  assert.equal(f.snapshot().compact.busy, true, 'native context_summary hook keeps compact button in busy state');
+
+  f.emit({...state('A', 1), fullyIdle:true, activeHook:null}); await settle();
+  assert.equal(f.snapshot().compact.busy, false);
+  assert.equal(f.snapshot().compact.enabled, true);
+});
+
+test('compaction state tracks existing and new checkpoints, caches lazy RPC reads, and surfaces completion receipt', async t => {
+  const stepPayloads = {
+    10: {
+      metadata:{createdAt:{seconds:1795700000, nanos:0}, modelUsage:usage(120, 45, 800)},
+      step:{case:'checkpoint', value:{
+        checkpointIndex:1, includedStepIndexStart:0, includedStepIndexEnd:9,
+        sessionSummary:'Summary at step 10', userIntent:'Fix bugs', codeChangeSummary:'Edited foo.js'
+      }}
+    },
+    24: {
+      metadata:{createdAt:{seconds:1795705000, nanos:0}, modelUsage:usage(150, 60, 900)},
+      step:{case:'checkpoint', value:{
+        checkpointIndex:2, includedStepIndexStart:10, includedStepIndexEnd:23,
+        sessionSummary:'Auto summary at step 24', usedFallbackSummary:true
+      }}
+    }
+  };
+  const f = fixture(state('A', 12, {compactedAtStepIndices:[10]}), {
+    contextOverridesEnabled:false,
+    composer:{footer:{isConvoInputEmpty:true, isRunning:false, isConvoLoading:false, inExistingConversation:true, audioPhase:'idle'}, submit:async () => {}},
+    metadata:() => ({generatorMetadata:[record(0)]}),
+    steps:request => ({steps:stepPayloads[request.stepOffset] ? [stepPayloads[request.stepOffset]] : []})
+  });
+  t.after(() => f.controller.dispose());
+  f.mount(); await settle();
+  assert.equal(f.calls.steps.length, 0, 'existing checkpoints do not eagerly call getCascadeTrajectorySteps');
+  assert.equal(f.snapshot().compact.justCompacted, false);
+  assert.deepEqual(f.snapshot().compactions.steps, [10]);
+  assert.equal(f.snapshot().compactions.selectedStep, 10);
+  assert.equal(f.snapshot().compactions.entry.status, 'idle');
+
+  const first = await f.selectCompaction(10);
+  assert.equal(first.status, 'ready');
+  assert.equal(first.sessionSummary, 'Summary at step 10');
+  assert.equal(first.includedStart, 0);
+  assert.equal(first.includedEnd, 9);
+  assert.deepEqual(structuredClone(first.usage), {input:120, output:45, cache:800});
+  assert.deepEqual(structuredClone(f.calls.steps), [{cascadeId:'A', stepOffset:10, trajectoryVerbosity:3}]);
+
+  await f.selectCompaction(10);
+  assert.equal(f.calls.steps.length, 1, 'ready summary is cached per (cascadeId, stepIndex)');
+
+  f.emit({...state('A', 25, {compactedAtStepIndices:[10, 24]}), fullyIdle:true}); await settle();
+  assert.equal(f.snapshot().compact.justCompacted, true, 'newly added compaction triggers completion receipt');
+  assert.deepEqual(f.snapshot().compactions.steps, [10, 24]);
+  assert.equal(f.snapshot().compactions.selectedStep, 24);
+  assert.equal(f.snapshot().compactions.entry.status, 'idle');
+
+  f.emit(state('B', 1)); await settle();
+  assert.equal(f.snapshot().compact.justCompacted, false);
+  assert.deepEqual(f.snapshot().compactions.steps, []);
+});
