@@ -2,7 +2,9 @@
 
 支持 **macOS 菜单栏** 与 **Windows 系统托盘** 的 Antigravity 汉化助手，通过 Antigravity 的本机调试接口加载中文界面，支持图标一键启动、随应用自动连接、轻量词库热更新、自动中文会话标题、额度重置倒计时、上下文用量显示，以及主代理与子代理的用量统计。运行时版本 **0.3.46**。
 
-界面汉化已验证于 macOS arm64 上的 **Antigravity App 2.29.0、2.31.1、2.31.2、2.33.0** 与 Windows x64 上的 **2.33.0、2.34.0**。已对照 **2.34.0** 的界面资源补齐模型菜单、编排器、发送快捷键和其他新增文案。上下文预算使用 Antigravity 官方配置，助手保留用量和额度显示。
+> **Windows 10 / 11 独立维护仓库**：本 Fork（`xoxgladxox-max/antigravity-chinese-helper`）独立维护 Windows 移植版及额外增强功能（编排器额度显示修复、一键 `/compact` 压缩与按需只读摘要查看），免编译安装包请前往 [Releases](https://github.com/xoxgladxox-max/antigravity-chinese-helper/releases) 下载。macOS 原版请见上游仓库 [`lurenxing628/antigravity-chinese-helper`](https://github.com/lurenxing628/antigravity-chinese-helper)。
+
+界面汉化已验证于 macOS arm64 上的 **Antigravity App 2.29.0、2.31.1、2.31.2、2.33.0** 与 Windows x64 上的 **2.33.0、2.34.0、2.35.2**。已对照 **2.34.0** 的界面资源补齐模型菜单、编排器、发送快捷键和其他新增文案。上下文预算使用 Antigravity 官方配置，助手保留用量和额度显示。
 
 ## 功能一览
 
@@ -10,7 +12,8 @@
 | --- | --- | --- |
 | 界面和协作群汉化 | 翻译主界面、工具状态、语音、通知以及 Swarm 协作群看板；词库可热更新 | 安装后自动连接，在菜单栏“汉”中暂停或重新加载 |
 | 自动中文标题 | 本地新主会话和新临时问题可直接生成中文标题，也可由已连接的主窗口自动改名 | 通过助手启动 Desktop，或在菜单显示主窗口已连接后开始新会话 |
-| 上下文与额度 | 显示上下文用量、5 小时和每周剩余额度及重置时间 | 点击模型选择器旁的圆环查看详情 |
+| 上下文与额度 | 显示上下文用量、5 小时和每周剩余额度及重置时间（支持 Orchestrator 编排器模式） | 点击模型选择器旁的圆环查看详情 |
+| 一键压缩与摘要查看 | 一键触发原生 `/compact` 压缩，按需只读查看历次压缩元数据与 `[Context Summary]` 全文并支持一键复制，零额外磁盘写入 | 点击周额度旁的“压缩”或“摘要”按钮 |
 | 会话用量统计 | 显示首字延迟、TPS、输入、输出及缓存命中率，区分主代理和子代理 | 查看模型选择器右侧统计；悬停或点击查看明细 |
 | CLI 汉化与状态栏 | 翻译终端菜单、设置、提示和额度，显示两行会话统计 | 运行 `./安装CLI汉化.command`，通过 `agy-zh` 启动 |
 
@@ -58,10 +61,13 @@ CLI 的运行文件和汉化副本保存在 `~/Library/Application Support/Antig
 
 ### Windows 10 / 11
 
-需要 Windows 10 或更新版本与 **Node.js 22 或更新版本**。Windows 版直接使用系统自带的 `.NET Framework 4.x C#` 编译器（`csc.exe`）构建原生无黑框系统托盘程序 `Antigravity汉化助手.exe`，无需额外安装 Visual Studio 或其他编译工具。支持官方安装包、nvm-windows、fnm、Volta、mise 和 Scoop 安装的 Node.js。
+需要 Windows 10 或更新版本与 **Node.js 22 或更新版本**。
+
+- **免编译安装包（推荐）**：前往 [Releases](https://github.com/xoxgladxox-max/antigravity-chinese-helper/releases) 下载最新的 `AntigravityChineseHelper-*-win-x64.zip` 解压，直接双击 **`安装汉化助手.cmd`**（按需双击 **`安装CLI汉化.cmd`**）。
+- **从源码构建安装**：直接使用系统自带的 `.NET Framework 4.x C#` 编译器（`csc.exe`）构建原生无黑框系统托盘程序 `Antigravity汉化助手.exe`，无需额外安装 Visual Studio 或其他编译工具。支持官方安装包、nvm-windows、fnm、Volta、mise 和 Scoop 安装的 Node.js。
 
 ```powershell
-git clone https://github.com/lurenxing628/antigravity-chinese-helper.git
+git clone https://github.com/xoxgladxox-max/antigravity-chinese-helper.git
 cd antigravity-chinese-helper
 .\build-windows.ps1
 # 或直接双击“安装汉化助手.cmd”（未构建时会自动完成构建，已运行时自动停止旧助手并更新）

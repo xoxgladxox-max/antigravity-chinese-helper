@@ -19,9 +19,10 @@ $sourceExe = Join-Path $sourceDir $exeName
 $sourceIco = Join-Path $sourceDir 'HelperIcon.ico'
 
 $needsBuild = -not (Test-Path -LiteralPath $sourceExe)
-if (-not $needsBuild) {
+$csDir = Join-Path $sourceDir 'packaging\windows'
+if (-not $needsBuild -and (Test-Path -LiteralPath $csDir)) {
     $exeTime = (Get-Item -LiteralPath $sourceExe).LastWriteTimeUtc
-    $newestCs = Get-ChildItem -Path (Join-Path $sourceDir 'packaging\windows\*.cs') | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    $newestCs = Get-ChildItem -Path (Join-Path $csDir '*.cs') | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
     if ($newestCs -and $newestCs.LastWriteTimeUtc -gt $exeTime) {
         $needsBuild = $true
     }
