@@ -1065,3 +1065,94 @@ test('compact action guards empty conversations, busy runs, and unsent drafts be
   assert.equal(f.snapshot().compact.busy, false);
   assert.equal(f.snapshot().compact.enabled, true);
 });
+
+test('quotaValues resolves Orchestrator planner quotas via trigger text and history fallback while isolating custom models', async t => {
+  const quotaGroups = [
+    {buckets:[
+      {bucketId:'gemini-5h', window:'5h', remaining:{case:'remainingFraction', value:0.8}, resetTime:{seconds:1800000000}},
+      {bucketId:'gemini-weekly', window:'weekly', remaining:{case:'remainingFraction', value:0.6}, resetTime:{seconds:1800100000}},
+      {bucketId:'3p-5h', window:'5h', remaining:{case:'remainingFraction', value:0.4}, resetTime:{seconds:1800000000}},
+      {bucketId:'3p-weekly', window:'weekly', remaining:{case:'remainingFraction', value:0.2}, resetTime:{seconds:1800100000}}
+    ]}
+  ];
+  const f = fixture(state('A', 0), {
+    contextOverridesEnabled:false,
+    selected:{label:'Orchestrator', isCustom:false},
+    anchorText:'Orchestrator Gemini 4 Neon 高',
+    quotaGroups,
+    metadata:() => ({generatorMetadata:[record(0, {modelDisplayName:'Gemini 4 Neon'})]})
+  });
+  t.after(() => f.controller.dispose());
+  f.mount(); await settle();
+  assert.equal(f.snapshot().fiveHourQuota.remainingFraction, 0.8);
+  assert.equal(f.snapshot().weeklyQuota.remainingFraction, 0.6);
+
+  f.setAnchorText('编排器 Claude Sonnet 5.5 高');
+  await settle();
+  assert.equal(f.snapshot().fiveHourQuota.remainingFraction, 0.4);
+  assert.equal(f.snapshot().weeklyQuota.remainingFraction, 0.2);
+
+  f.setAnchorText("Orchestrator The Orchestrator's own planner");
+  f.emit(state('A', 1)); await settle();
+  assert.equal(f.snapshot().fiveHourQuota.remainingFraction, 0.8);
+  assert.equal(f.snapshot().weeklyQuota.remainingFraction, 0.6);
+
+  f.select(9999, 'MyLocalLlama', {isCustom:true});
+  f.setAnchorText('MyLocalLlama');
+  await settle();
+  assert.equal(f.snapshot().fiveHourQuota, null);
+  assert.equal(f.snapshot().weeklyQuota, null);
+});
+
+test('compaction state tracks existing and new checkpoints, caches lazy RPC reads, and surfaces completion receipt', async t => {
+  const stepPayloads = {
+    10: {
+      metadata:{createdAt:{seconds:1795700000, nanos:0}, modelUsage:usage(120, 45, 800)},
+      step:{case:'checkpoint', value:{
+        checkpointIndex:1, includedStepIndexStart:0, includedStepIndexEnd:9,
+        sessionSummary:'Summary at step 10', userIntent:'Fix bugs', codeChangeSummary:'Edited foo.js'
+      }}
+    },
+    24: {
+      metadata:{createdAt:{seconds:1795705000, nanos:0}, modelUsage:usage(150, 60, 900)},
+      step:{case:'checkpoint', value:{
+        checkpointIndex:2, includedStepIndexStart:10, includedStepIndexEnd:23,
+        sessionSummary:'Auto summary at step 24', usedFallbackSummary:true
+      }}
+    }
+  };
+  const f = fixture(state('A', 12, {compactedAtStepIndices:[10]}), {
+    contextOverridesEnabled:false,
+    composer:{footer:{isConvoInputEmpty:true, isRunning:false, isConvoLoading:false, inExistingConversation:true, audioPhase:'idle'}, submit:async () => {}},
+    metadata:() => ({generatorMetadata:[record(0)]}),
+    steps:request => ({steps:stepPayloads[request.stepOffset] ? [stepPayloads[request.stepOffset]] : []})
+  });
+  t.after(() => f.controller.dispose());
+  f.mount(); await settle();
+  assert.equal(f.calls.steps.length, 0, 'existing checkpoints do not eagerly call getCascadeTrajectorySteps');
+  assert.equal(f.snapshot().compact.justCompacted, false);
+  assert.deepEqual(f.snapshot().compactions.steps, [10]);
+  assert.equal(f.snapshot().compactions.selectedStep, 10);
+  assert.equal(f.snapshot().compactions.entry.status, 'idle');
+
+  const first = await f.selectCompaction(10);
+  assert.equal(first.status, 'ready');
+  assert.equal(first.sessionSummary, 'Summary at step 10');
+  assert.equal(first.includedStart, 0);
+  assert.equal(first.includedEnd, 9);
+  assert.deepEqual(structuredClone(first.usage), {input:120, output:45, cache:800});
+  assert.deepEqual(structuredClone(f.calls.steps), [{cascadeId:'A', stepOffset:10, trajectoryVerbosity:3}]);
+
+  await f.selectCompaction(10);
+  assert.equal(f.calls.steps.length, 1, 'ready summary is cached per (cascadeId, stepIndex)');
+
+  f.emit({...state('A', 25, {compactedAtStepIndices:[10, 24]}), fullyIdle:true}); await settle();
+  assert.equal(f.snapshot().compact.justCompacted, true, 'newly added compaction triggers completion receipt');
+  assert.deepEqual(f.snapshot().compactions.steps, [10, 24]);
+  assert.equal(f.snapshot().compactions.selectedStep, 24);
+  assert.equal(f.snapshot().compactions.entry.status, 'idle');
+
+  f.emit(state('B', 1)); await settle();
+  assert.equal(f.snapshot().compact.justCompacted, false);
+  assert.deepEqual(f.snapshot().compactions.steps, []);
+});

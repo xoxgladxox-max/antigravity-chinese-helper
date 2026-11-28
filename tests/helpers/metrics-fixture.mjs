@@ -30,25 +30,27 @@ function record(index, overrides = {}) {
   }}};
 }
 
-function state(id, generation, {stepUsage, costSummary} = {}) {
-  return {conversationId:id, fullyIdle:false, costSummary, trajectorySlice:{
-    totalGeneratorMetadataLength:generation,
-    generatorMetadatasInSlice:generation ? [{stepIndices:[generation - 1], plannerConfig:{planModel:model}}] : [],
-    totalStepsLength:generation, stepsSlice:{startIndex:Math.max(0, generation - 1)},
-    stepsInSlice:stepUsage ? [{metadata:{modelUsage:stepUsage}}] : []
-  }};
+function state(id, generation, {stepUsage, costSummary, compactedAtStepIndices, stepsInSlice} = {}) {
+  return {conversationId:id, fullyIdle:false, costSummary,
+    compactionInfo:compactedAtStepIndices ? {compactedAtStepIndices} : undefined,
+    trajectorySlice:{
+      totalGeneratorMetadataLength:generation,
+      generatorMetadatasInSlice:generation ? [{stepIndices:[generation - 1], plannerConfig:{planModel:model}}] : [],
+      totalStepsLength:generation, stepsSlice:{startIndex:Math.max(0, generation - 1)},
+      stepsInSlice:stepsInSlice ?? (stepUsage ? [{metadata:{modelUsage:stepUsage}}] : [])
+    }};
 }
 
-function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, config, stored = {}, save, load, windowGlobals = {}, client: suppliedClient,
-  childStates = {}, byParent = {}, summaries = {}, contextOverridesEnabled = true, composer = null} = {}) {
+function fixture(initial, {metadata = () => ({generatorMetadata:[]}), steps = () => ({steps:[]}), catalog, config, stored = {}, save, load, windowGlobals = {}, client: suppliedClient,
+  childStates = {}, byParent = {}, summaries = {}, contextOverridesEnabled = true, composer = null, selected:initialSelected = null, anchorText = '', quotaGroups = null} = {}) {
   let current = initial;
   let viewId = initial?.conversationId;
   const listeners = new Set();
   const storageListeners = new Set();
   const storeListeners = new Set();
   const childListeners = new Map(), childProviders = new Map(), registryActive = new Map();
-  const calls = {metadata:[], catalog:0, catalogRequests:[], config:0, resolved:[], sent:[], saved:[], subscribed:[], unsubscribed:[]};
-  const selected = {value:model, label:'Gemini Fixture'};
+  const calls = {metadata:[], steps:[], catalog:0, catalogRequests:[], config:0, resolved:[], sent:[], saved:[], subscribed:[], unsubscribed:[]};
+  const selected = initialSelected ? {...initialSelected} : {value:model, label:'Gemini Fixture'};
   let actions;
   const provider = {
     getState:() => current,
@@ -101,9 +103,14 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
       calls.metadata.push({...request});
       return metadata(request);
     },
+    getCascadeTrajectorySteps(request) {
+      calls.steps.push({...request});
+      return steps(request);
+    },
     async sendUserCascadeMessage(request, options) { calls.sent.push({method:'message', request, options, receiver:this}); return 'message-result'; },
     async sendAllQueuedMessages(request, options) { calls.sent.push({method:'queued', request, options, receiver:this}); return 'queued-result'; }
   };
+  const cloudCodeService = quotaGroups ? {retrieveUserQuotaSummary:async () => ({response:{groups:quotaGroups}})} : null;
   const createView = () => ({
     host:{}, updates:[], disposed:false,
     update(snapshot) {
@@ -118,7 +125,7 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
   const providerFiber = {memoizedProps:{value:{
     cascadeContext:{state:{agentStateProvider:provider}}, selectedModel:selected
   }}, return:{memoizedProps:{value:{store}}, return:{memoizedProps:{value:registry},
-    return:{memoizedProps:{services:{core:{authService:{_lsClient:client}}}}, return:null}}}};
+    return:{memoizedProps:{services:{core:{authService:{_lsClient:client}, cloudCodeService}}}, return:null}}}};
   const initialFooter = composer ? {...composer.footer} : null;
   const buildFiber = () => composer ? {
     get memoizedProps() { return composer.footer; },
@@ -128,6 +135,7 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
   const footerElement = composer ? {nodeType:1, __reactFiber$fixture:buildFiber()} : null;
   let anchor = {
     isConnected:true,
+    textContent:anchorText,
     contains:target => target === anchor,
     matches:selector => selector === '[data-testid="model-selector-trigger"]',
     getAttribute:() => null,
@@ -170,7 +178,7 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
     if (init) Object.assign(message, init);
     return message;
   }
-  const document = {defaultView:{...windowGlobals, nativeStorage, sendSchema, createNativeMessage}};
+  const document = {defaultView:{setTimeout, clearTimeout, ...windowGlobals, nativeStorage, sendSchema, createNativeMessage}};
   const create = vm.runInNewContext(controllerSource, {queueMicrotask});
   const controller = create(document, (_document, _anchor, callbacks) => {
     actions = callbacks;
@@ -191,10 +199,16 @@ function fixture(initial, {metadata = () => ({generatorMetadata:[]}), catalog, c
     },
     setLimit:tokens => actions.setContextLimit?.(tokens) ?? false,
     compact:() => actions.compactConversation?.() ?? false,
+    selectCompaction:(stepIndex, options) => actions.selectCompaction?.(stepIndex, options) ?? null,
+    setAnchorText(text) { anchor.textContent = text; controller.discover(anchor); },
     mutateComposer() {
       controller.mutations([{type:'childList', target:composerTarget}]);
     },
-    select(value, label = String(value)) { selected.value = value; selected.label = label; controller.discover(anchor); },
+    select(value, label = String(value), extra = {}) {
+      for (const k of Object.keys(selected)) delete selected[k];
+      Object.assign(selected, {value, label, ...extra});
+      controller.discover(anchor);
+    },
     emit(next = current, id = next.conversationId ?? viewId) { current = next; viewId = id; for (const listener of listeners) listener(); },
     emitChild(id, next = childStates[id]) {
       childStates[id] = next;

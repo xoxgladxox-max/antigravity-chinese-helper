@@ -103,11 +103,31 @@
     .compact-trigger:not(:disabled):hover { border-color:var(--muted-foreground,#7d8795); }
     .compact-trigger:disabled { pointer-events:none; opacity:.45; }
     .compact-trigger[data-busy="true"] { color:var(--foreground,#e8e8eb); opacity:.78; }
+    .compact-trigger[data-done="true"] { color:var(--foreground,#e8e8eb); border-color:rgba(34,197,94,.55); }
     .compact-tooltip { width:236px; }
     .compact-command { padding:1px 5px; border:1px solid var(--border,#3e4149); border-radius:5px; color:var(--muted-foreground,#9199a6); background:var(--input,#111318); font:10.5px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; }
     .compact-desc { margin:0 0 6px; color:var(--muted-foreground,#9199a6); font-size:11.5px; line-height:1.45; }
     .compact-status { margin:0; color:var(--secondary-foreground,#b6bbc4); font-size:11px; line-height:1.4; overflow-wrap:anywhere; }
     .compact-status[data-ready="true"] { color:var(--foreground,#e8e8eb); }
+    .compact-summary-item { display:inline-flex; align-items:center; flex:0 0 auto; }
+    .compaction-dialog { width:min(520px,calc(100vw - 24px)); }
+    .compaction-panel { padding:0; overflow:hidden; }
+    .compaction-header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 13px; border-bottom:1px solid var(--border,#3e4149); }
+    .compaction-header-left { display:flex; align-items:center; gap:8px; min-width:0; }
+    .compaction-title-group { display:grid; gap:1px; min-width:0; }
+    .compaction-subtitle { color:var(--muted-foreground,#9199a6); font-size:11px; line-height:1.35; overflow-wrap:anywhere; }
+    .compaction-header-right { display:flex; align-items:center; gap:6px; flex:none; }
+    .compaction-icon-btn { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; padding:0; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--muted-foreground,#9199a6); font-size:12px; line-height:1; }
+    .compaction-icon-btn:not(:disabled):hover { border-color:var(--border,#3e4149); }
+    .compaction-badge { padding:2px 7px; border:1px solid var(--border,#3e4149); border-radius:999px; color:var(--secondary-foreground,#b6bbc4); font-size:10.5px; line-height:1.3; white-space:nowrap; }
+    .compaction-badge[data-state="ready"] { color:#4ade80; border-color:rgba(74,222,128,.35); }
+    .compaction-badge[data-state="error"] { color:var(--destructive,#f48282); border-color:rgba(244,130,130,.35); }
+    .compaction-body { display:grid; gap:10px; padding:11px 13px; }
+    .compaction-content { margin:0; padding:10px 11px; border:1px solid var(--border,#3e4149); border-radius:8px; background:var(--input,#111318); color:var(--foreground,#e8e8eb); max-height:280px; overflow:auto; font:11.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; word-break:break-word; user-select:text; }
+    .compaction-actions { display:flex; align-items:center; gap:8px; }
+    .compaction-copy { height:28px; padding:0 11px; border:0; border-radius:6px; background:#2563eb; color:#fff; font:500 11.5px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    .compaction-copy:not(:disabled):hover { background:#1d4ed8; color:#fff; }
+    .compaction-retry { height:28px; padding:0 10px; border:1px solid var(--border,#3e4149); border-radius:6px; background:transparent; font-size:11.5px; }
   `;
   shadow.appendChild(style);
   const metricsHost = document.createElement('span');
@@ -150,9 +170,13 @@
   let currentSubagentMetrics = null;
   let currentSetting = null;
   let currentCompact = null;
+  let currentCompactions = null;
   let settingDirty = false;
   let applyFeedbackTimer = null;
   let quotaResetTimer = null;
+  let copyFeedbackTimer = null;
+  let summaryCollapsed = false;
+  let currentSummaryText = '';
   const numericKeys = ['used', 'maxContext', 'modelCapacity', 'compactionReference'];
   const clampFraction = value => Math.max(0, Math.min(1, value));
   const fractionText = value => value === null ? '—' : `${Math.round(value * 100)}%`;
@@ -519,6 +543,165 @@
     if (!compactButton.disabled) void actions.compactConversation?.();
   });
   listen(compactButton, 'keydown', event => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation(); });
+
+  const summaryItem = document.createElement('span'); summaryItem.className = 'compact-summary-item'; summaryItem.hidden = true;
+  const summaryButton = document.createElement('button');
+  summaryButton.type = 'button'; summaryButton.className = 'compact-trigger no-focus-agent-input';
+  summaryButton.textContent = '摘要';
+  summaryButton.setAttribute('data-testid', 'compaction-summary-button');
+  summaryButton.setAttribute('aria-haspopup', 'dialog');
+  summaryButton.setAttribute('aria-expanded', 'false');
+  summaryButton.setAttribute('aria-controls', 'context-compaction-summary-dialog');
+  summaryButton.setAttribute('aria-label', '查看上下文压缩摘要');
+  const summaryDialog = document.createElement('div');
+  summaryDialog.className = 'tooltip compaction-dialog no-focus-agent-input';
+  summaryDialog.id = 'context-compaction-summary-dialog';
+  summaryDialog.setAttribute('role', 'dialog');
+  summaryDialog.setAttribute('aria-label', '上下文压缩摘要');
+  summaryDialog.hidden = true;
+  const summaryPopover = typeof summaryDialog.showPopover === 'function';
+  if (summaryPopover) summaryDialog.setAttribute('popover', 'manual');
+  const summaryPanel = document.createElement('div'); summaryPanel.className = 'panel compaction-panel';
+  const summaryHeader = document.createElement('div'); summaryHeader.className = 'compaction-header';
+  const summaryHeaderLeft = document.createElement('div'); summaryHeaderLeft.className = 'compaction-header-left';
+  const summaryToggle = document.createElement('button');
+  summaryToggle.type = 'button'; summaryToggle.className = 'compaction-icon-btn no-focus-agent-input';
+  summaryToggle.textContent = '▾';
+  summaryToggle.setAttribute('data-testid', 'compaction-summary-toggle');
+  summaryToggle.setAttribute('aria-expanded', 'true');
+  summaryToggle.setAttribute('aria-label', '折叠或展开压缩详情');
+  const summaryTitleGroup = document.createElement('div'); summaryTitleGroup.className = 'compaction-title-group';
+  const summaryTitle = document.createElement('span'); summaryTitle.className = 'title'; summaryTitle.textContent = '上下文压缩';
+  const summarySubtitle = document.createElement('span'); summarySubtitle.className = 'compaction-subtitle'; summarySubtitle.textContent = '—';
+  summarySubtitle.setAttribute('data-testid', 'compaction-summary-subtitle');
+  summaryTitleGroup.append(summaryTitle, summarySubtitle);
+  summaryHeaderLeft.append(summaryToggle, summaryTitleGroup);
+  const summaryHeaderRight = document.createElement('div'); summaryHeaderRight.className = 'compaction-header-right';
+  const summaryPrev = document.createElement('button');
+  summaryPrev.type = 'button'; summaryPrev.className = 'compaction-icon-btn no-focus-agent-input';
+  summaryPrev.textContent = '‹'; summaryPrev.hidden = true;
+  summaryPrev.setAttribute('data-testid', 'compaction-summary-prev');
+  summaryPrev.setAttribute('aria-label', '上一次压缩');
+  const summaryNext = document.createElement('button');
+  summaryNext.type = 'button'; summaryNext.className = 'compaction-icon-btn no-focus-agent-input';
+  summaryNext.textContent = '›'; summaryNext.hidden = true;
+  summaryNext.setAttribute('data-testid', 'compaction-summary-next');
+  summaryNext.setAttribute('aria-label', '下一次压缩');
+  const summaryState = document.createElement('span'); summaryState.className = 'compaction-badge';
+  summaryState.setAttribute('data-testid', 'compaction-summary-state');
+  summaryState.setAttribute('data-state', 'ready');
+  summaryState.textContent = '已完成';
+  const summaryClose = document.createElement('button');
+  summaryClose.type = 'button'; summaryClose.className = 'compaction-icon-btn no-focus-agent-input';
+  summaryClose.textContent = '×';
+  summaryClose.setAttribute('data-testid', 'compaction-summary-close');
+  summaryClose.setAttribute('aria-label', '关闭压缩摘要');
+  summaryHeaderRight.append(summaryPrev, summaryNext, summaryState, summaryClose);
+  summaryHeader.append(summaryHeaderLeft, summaryHeaderRight);
+
+  const summaryBody = document.createElement('div'); summaryBody.className = 'compaction-body';
+  summaryBody.setAttribute('data-testid', 'compaction-summary-body');
+  const summaryDetails = document.createElement('dl');
+  const summaryMeta = {};
+  for (const [key, label] of [
+    ['record', '压缩记录'],
+    ['createdAt', '压缩时间'],
+    ['steps', '覆盖步骤'],
+    ['mode', '摘要模式'],
+    ['usage', '压缩消耗'],
+  ]) {
+    const term = document.createElement('dt'); term.textContent = label;
+    const value = document.createElement('dd'); value.textContent = '—';
+    summaryDetails.append(term, value);
+    summaryMeta[key] = value;
+  }
+  const summaryContent = document.createElement('pre'); summaryContent.className = 'compaction-content';
+  summaryContent.setAttribute('data-testid', 'compaction-summary-content');
+  summaryContent.textContent = '尚未加载压缩摘要';
+  const summaryActions = document.createElement('div'); summaryActions.className = 'compaction-actions';
+  const summaryCopy = document.createElement('button');
+  summaryCopy.type = 'button'; summaryCopy.className = 'compaction-copy no-focus-agent-input';
+  summaryCopy.textContent = '复制压缩内容';
+  summaryCopy.disabled = true;
+  summaryCopy.setAttribute('data-testid', 'compaction-summary-copy');
+  const summaryRetry = document.createElement('button');
+  summaryRetry.type = 'button'; summaryRetry.className = 'compaction-retry no-focus-agent-input';
+  summaryRetry.textContent = '重试读取'; summaryRetry.hidden = true;
+  summaryRetry.setAttribute('data-testid', 'compaction-summary-retry');
+  summaryActions.append(summaryCopy, summaryRetry);
+  summaryBody.append(summaryDetails, summaryContent, summaryActions);
+  summaryPanel.append(summaryHeader, summaryBody);
+  summaryDialog.appendChild(summaryPanel);
+  summaryItem.append(summaryButton, summaryDialog);
+  shadow.appendChild(summaryItem);
+
+  const summaryCard = {item:summaryItem, button:summaryButton, tooltip:summaryDialog, usePopover:summaryPopover,
+    open:false, hovered:false, focused:false, pinned:false, openListeners:[]};
+  function clearCopyFeedback() {
+    window.clearTimeout(copyFeedbackTimer); copyFeedbackTimer = null;
+    writeText(summaryCopy, '复制压缩内容');
+  }
+  for (const type of ['keydown', 'keyup', 'keypress']) listen(summaryDialog, type, event => event.stopPropagation());
+  listen(summaryButton, 'pointerdown', event => { event.preventDefault(); event.stopPropagation(); });
+  listen(summaryButton, 'mousedown', event => { event.preventDefault(); event.stopPropagation(); });
+  listen(summaryButton, 'click', event => {
+    event.preventDefault(); event.stopPropagation();
+    if (summaryCard.open) { dismiss(summaryCard); return; }
+    summaryCard.pinned = true;
+    setOpen(summaryCard, true);
+    const step = currentCompactions?.selectedStep;
+    const status = currentCompactions?.entry?.status;
+    if (typeof step === 'number' && (!status || status === 'idle' || status === 'error')) {
+      void actions.selectCompaction?.(step);
+    }
+  });
+  listen(summaryButton, 'keydown', event => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation(); });
+  listen(summaryClose, 'click', event => { event.preventDefault(); event.stopPropagation(); dismiss(summaryCard); });
+  listen(summaryToggle, 'click', event => {
+    event.preventDefault(); event.stopPropagation();
+    summaryCollapsed = !summaryCollapsed;
+    summaryBody.hidden = summaryCollapsed;
+    writeText(summaryToggle, summaryCollapsed ? '▸' : '▾');
+    writeAttribute(summaryToggle, 'aria-expanded', String(!summaryCollapsed));
+    if (summaryCard.open) positionTooltip(summaryCard);
+  });
+  const stepOffsetNav = delta => {
+    const steps = currentCompactions?.steps ?? [];
+    const index = steps.indexOf(currentCompactions?.selectedStep);
+    if (index < 0) return;
+    const target = steps[index + delta];
+    if (typeof target === 'number') {
+      clearCopyFeedback();
+      void actions.selectCompaction?.(target);
+    }
+  };
+  listen(summaryPrev, 'click', event => { event.preventDefault(); event.stopPropagation(); stepOffsetNav(-1); });
+  listen(summaryNext, 'click', event => { event.preventDefault(); event.stopPropagation(); stepOffsetNav(1); });
+  listen(summaryRetry, 'click', event => {
+    event.preventDefault(); event.stopPropagation();
+    if (typeof currentCompactions?.selectedStep === 'number') {
+      void actions.selectCompaction?.(currentCompactions.selectedStep, {force:true});
+    }
+  });
+  listen(summaryCopy, 'click', async event => {
+    event.preventDefault(); event.stopPropagation();
+    if (summaryCopy.disabled || !currentSummaryText) return;
+    try {
+      const write = window.navigator?.clipboard?.writeText;
+      if (typeof write !== 'function') throw new Error('clipboard unavailable');
+      await write.call(window.navigator.clipboard, currentSummaryText);
+      if (disposed) return;
+      clearCopyFeedback();
+      writeText(summaryCopy, '已复制');
+      copyFeedbackTimer = window.setTimeout(clearCopyFeedback, 1800);
+    } catch {
+      if (!disposed) {
+        clearCopyFeedback();
+        writeText(summaryCopy, '复制失败');
+        copyFeedbackTimer = window.setTimeout(clearCopyFeedback, 1800);
+      }
+    }
+  });
   const metricDefinitions = [
     ['ttftMs', '首字', value => `${(value / 1000).toFixed(1)}s`],
     ['tps', 'TPS', value => value.toFixed(1)],
@@ -628,13 +811,115 @@
   }
   function normalizeCompact(compact) {
     const busy = compact?.busy === true;
+    const justCompacted = !busy && compact?.justCompacted === true;
     const enabled = !busy && compact?.enabled === true && typeof actions.compactConversation === 'function';
     const reason = typeof compact?.reason === 'string' && compact.reason
       ? compact.reason
-      : busy ? '正在压缩对话历史…' : enabled ? '点击立即压缩当前对话历史' : '当前暂不可压缩上下文';
-    return {enabled, busy, reason};
+      : busy ? '正在压缩对话历史…' : justCompacted ? '刚刚已完成上下文压缩' : enabled ? '点击立即压缩当前对话历史' : '当前暂不可压缩上下文';
+    return {enabled, busy, justCompacted, reason};
   }
-  const sameCompact = (a, b) => Boolean(a && b && a.enabled === b.enabled && a.busy === b.busy && a.reason === b.reason);
+  const sameCompact = (a, b) => Boolean(a && b && a.enabled === b.enabled && a.busy === b.busy && a.justCompacted === b.justCompacted && a.reason === b.reason);
+  function formatCompactionTime(ms) {
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '—';
+    const date = new Date(ms), pad = value => String(value).padStart(2, '0');
+    return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+  function compactionSummaryText(entry) {
+    if (!entry || entry.status !== 'ready') return '';
+    const sections = [];
+    if (entry.sessionSummary) sections.push(entry.sessionSummary);
+    if (entry.userIntent) sections.push(`## 用户意图\n${entry.userIntent}`);
+    if (entry.codeChangeSummary) sections.push(`## 代码修改摘要\n${entry.codeChangeSummary}`);
+    if (entry.memorySummary) sections.push(`## 记忆摘要\n${entry.memorySummary}`);
+    return sections.length ? `[Context Summary]\n\n${sections.join('\n\n')}` : '';
+  }
+  function normalizeCompactions(compactions) {
+    const steps = Array.isArray(compactions?.steps) ? compactions.steps.filter(step => Number.isInteger(step) && step >= 0) : [];
+    const selectedStep = typeof compactions?.selectedStep === 'number' && steps.includes(compactions.selectedStep)
+      ? compactions.selectedStep : steps.at(-1) ?? null;
+    const entry = compactions?.entry ?? null;
+    return {
+      steps,
+      selectedStep,
+      entry: entry ? {
+        status: entry.status ?? 'idle',
+        stepIndex: entry.stepIndex ?? selectedStep,
+        checkpointIndex: entry.checkpointIndex ?? null,
+        includedStart: entry.includedStart ?? null,
+        includedEnd: entry.includedEnd ?? null,
+        intentOnly: entry.intentOnly === true,
+        failed: entry.failed === true,
+        fallback: entry.fallback === true,
+        sessionSummary: entry.sessionSummary ?? '',
+        userIntent: entry.userIntent ?? '',
+        codeChangeSummary: entry.codeChangeSummary ?? '',
+        memorySummary: entry.memorySummary ?? '',
+        createdAtMs: entry.createdAtMs ?? null,
+        usage: entry.usage ? {...entry.usage} : null,
+        error: entry.error ?? null,
+      } : null,
+    };
+  }
+  const sameUsage = (a, b) => a === b || Boolean(a && b && a.input === b.input && a.cache === b.cache && a.output === b.output);
+  const sameCompactions = (a, b) => Boolean(a && b && a.selectedStep === b.selectedStep &&
+    a.steps.length === b.steps.length && a.steps.every((step, i) => step === b.steps[i]) &&
+    (a.entry === b.entry || Boolean(a.entry && b.entry &&
+      a.entry.status === b.entry.status && a.entry.stepIndex === b.entry.stepIndex &&
+      a.entry.checkpointIndex === b.entry.checkpointIndex &&
+      a.entry.includedStart === b.entry.includedStart && a.entry.includedEnd === b.entry.includedEnd &&
+      a.entry.intentOnly === b.entry.intentOnly && a.entry.failed === b.entry.failed && a.entry.fallback === b.entry.fallback &&
+      a.entry.sessionSummary === b.entry.sessionSummary && a.entry.userIntent === b.entry.userIntent &&
+      a.entry.codeChangeSummary === b.entry.codeChangeSummary && a.entry.memorySummary === b.entry.memorySummary &&
+      a.entry.createdAtMs === b.entry.createdAtMs && a.entry.error === b.entry.error &&
+      sameUsage(a.entry.usage, b.entry.usage))));
+  function renderCompactionsView(compactions) {
+    const count = compactions.steps.length;
+    summaryItem.hidden = count === 0;
+    if (!count) {
+      currentSummaryText = '';
+      clearCopyFeedback();
+      if (summaryCard.open) dismiss(summaryCard);
+      return;
+    }
+    writeText(summaryButton, count > 1 ? `摘要 ${count}` : '摘要');
+    const selectedIndex = compactions.steps.indexOf(compactions.selectedStep);
+    const ordinal = selectedIndex >= 0 ? selectedIndex + 1 : count;
+    const entry = compactions.entry;
+    const status = entry?.status ?? 'idle';
+    summaryPrev.hidden = count <= 1;
+    summaryNext.hidden = count <= 1;
+    summaryPrev.disabled = selectedIndex <= 0;
+    summaryNext.disabled = selectedIndex < 0 || selectedIndex >= count - 1;
+    const checkpointPart = entry?.checkpointIndex ? `检查点 #${entry.checkpointIndex}` : '';
+    const rangePart = entry?.includedStart != null && entry?.includedEnd != null
+      ? `步骤 ${entry.includedStart}–${entry.includedEnd}`
+      : typeof compactions.selectedStep === 'number' ? `步骤 #${compactions.selectedStep}` : '';
+    const subtitleParts = [`第 ${ordinal} / ${count} 次`, checkpointPart, rangePart].filter(Boolean);
+    writeText(summarySubtitle, subtitleParts.join(' · '));
+    writeAttribute(summaryState, 'data-state', status === 'error' ? 'error' : status === 'loading' ? 'loading' : 'ready');
+    writeText(summaryState, status === 'error' ? '读取失败' : status === 'loading' ? '读取中' : entry?.failed ? '摘要失败' : '已完成');
+    writeText(summaryMeta.record, checkpointPart ? `${checkpointPart}（第 ${ordinal} / ${count} 次）` : `第 ${ordinal} / ${count} 次`);
+    writeText(summaryMeta.createdAt, formatCompactionTime(entry?.createdAtMs));
+    writeText(summaryMeta.steps, entry?.includedStart != null && entry?.includedEnd != null
+      ? `步骤 ${entry.includedStart} – ${entry.includedEnd}（共 ${Math.max(0, entry.includedEnd - entry.includedStart + 1)} 步）`
+      : typeof compactions.selectedStep === 'number' ? `步骤 #${compactions.selectedStep}` : '—');
+    const modeText = !entry || status !== 'ready' ? '—'
+      : entry.failed ? '模型摘要失败'
+      : entry.fallback ? '备用摘要'
+      : entry.intentOnly ? '仅保留意图'
+      : '模型总结';
+    writeText(summaryMeta.mode, modeText);
+    const u = entry?.usage;
+    writeText(summaryMeta.usage, u ? `输入 ${formatTokens(u.input + u.cache, 1)} · 输出 ${formatTokens(u.output, 1)}` : '—');
+    const text = compactionSummaryText(entry);
+    currentSummaryText = text;
+    if (status === 'loading') writeText(summaryContent, '正在读取压缩摘要…');
+    else if (status === 'error') writeText(summaryContent, entry?.error || '读取压缩摘要失败');
+    else if (status === 'ready') writeText(summaryContent, text || '该检查点未返回压缩摘要正文。');
+    else writeText(summaryContent, '点击“摘要”按需读取该次压缩内容…');
+    summaryCopy.disabled = !text;
+    summaryRetry.hidden = status !== 'error';
+  }
   function update(snapshot) {
     if (disposed) return false;
     const next = {};
@@ -661,7 +946,9 @@
       .some(key => currentSetting?.[key] !== setting?.[key]));
     const nextCompact = normalizeCompact(snapshot?.compact);
     const compactChanged = !sameCompact(currentCompact, nextCompact);
-    if (!ringsChanged && !metricsChanged && !settingChanged && !compactChanged) return false;
+    const nextCompactions = normalizeCompactions(snapshot?.compactions);
+    const compactionsChanged = !sameCompactions(currentCompactions, nextCompactions);
+    if (!ringsChanged && !metricsChanged && !settingChanged && !compactChanged && !compactionsChanged) return false;
     if (settingChanged) updateSetting(setting, next.maxContext);
     if (ringsChanged) {
       current = next;
@@ -692,12 +979,17 @@
       compactButton.disabled = !nextCompact.enabled;
       writeAttribute(compactItem, 'data-disabled', String(!nextCompact.enabled));
       writeAttribute(compactButton, 'data-busy', String(nextCompact.busy));
-      writeText(compactLabel, nextCompact.busy ? '压缩中' : '压缩');
+      writeAttribute(compactButton, 'data-done', String(nextCompact.justCompacted));
+      writeText(compactLabel, nextCompact.busy ? '压缩中' : nextCompact.justCompacted ? '已压缩' : '压缩');
       writeText(compactStatus, nextCompact.reason);
       writeAttribute(compactStatus, 'data-ready', String(nextCompact.enabled));
       writeAttribute(compactButton, 'aria-label', nextCompact.busy
         ? '压缩上下文：正在压缩对话历史'
         : `压缩上下文：${nextCompact.reason}`);
+    }
+    if (compactionsChanged) {
+      currentCompactions = nextCompactions;
+      renderCompactionsView(nextCompactions);
     }
     if (active) positionTooltip(active);
     refreshQuotaCountdown();
@@ -713,6 +1005,8 @@
       if (active) dismiss(active);
       disposed = true;
       window.clearTimeout(applyFeedbackTimer);
+      window.clearTimeout(copyFeedbackTimer);
+      window.clearTimeout(quotaResetTimer);
       metricsResize.disconnect();
       for (const remove of permanentListeners) remove();
       permanentListeners.length = 0;
@@ -1293,7 +1587,11 @@
   }
   function quotaValues(instance, modelLabel) {
     const selected = instance.selected;
-    const family = quotaFamily(selected?.label) ?? (!selected || selected.modelAlias ? quotaFamily(modelLabel) : null);
+    const triggerLabel = typeof instance.anchor?.textContent === 'string' ? instance.anchor.textContent.trim() : '';
+    const canFallbackToHistory = !selected || selected.modelAlias || (!selected.isCustom && /^orchestrator$/i.test(selected.label ?? ''));
+    const family = quotaFamily(selected?.label)
+      ?? quotaFamily(triggerLabel)
+      ?? (canFallbackToHistory ? quotaFamily(modelLabel) : null);
     const buckets = (instance.quotaHub?.groups ?? []).flatMap(group => group.buckets.filter(bucket =>
       family === 'gemini' ? bucket.bucketId.startsWith('gemini-') : family === '3p' ? bucket.bucketId.startsWith('3p-') : false));
     return {weeklyQuota:buckets.find(bucket => bucket.window === 'weekly') ?? null,
@@ -1850,6 +2148,19 @@
         break;
       }
     }
+    const inlineCheckpoints = new Map();
+    const compactedSet = new Set();
+    for (const index of state?.compactionInfo?.compactedAtStepIndices ?? []) {
+      if (Number.isInteger(index) && index >= 0) compactedSet.add(index);
+    }
+    for (let i = 0; i < steps.length; i++) {
+      if (steps[i]?.step?.case === 'checkpoint') {
+        const index = start + i;
+        compactedSet.add(index);
+        inlineCheckpoints.set(index, steps[i]);
+      }
+    }
+    const compactedSteps = [...compactedSet].sort((a, b) => a - b);
     const costParts = section => {
       if (!section || !(section.input || section.cacheRead || section.output)) return null;
       const parts = {input:count(section.input?.tokens ?? 0), cache:count(section.cacheRead?.tokens ?? 0), output:count(section.output?.tokens ?? 0)};
@@ -1858,8 +2169,48 @@
     return {id:state?.conversationId, trajectoryId:slice.trajectoryId || null, generation:count(slice.totalGeneratorMetadataLength) ?? 0,
       stepCount:count(slice.totalStepsLength) ?? steps.length,
       generator, usage:latestUsage, idle:state?.fullyIdle === true, compacting:state?.activeHook?.hookName === 'context_summary',
-      hasTrajectory:Boolean(state?.trajectorySlice),
+      hasTrajectory:Boolean(state?.trajectorySlice), compactedSteps, inlineCheckpoints,
       cost:costParts(state?.costSummary?.total?.cumulativeTotal), subagentCost:costParts(state?.costSummary?.total?.subagent)};
+  }
+  function timestampMs(ts) {
+    if (!ts || (ts.seconds === undefined && ts.nanos === undefined)) return null;
+    const ms = Number(ts.seconds ?? 0) * 1000 + Number(ts.nanos ?? 0) / 1000000;
+    return Number.isFinite(ms) && ms > 0 ? ms : null;
+  }
+  function parseCheckpointStep(step, stepIndex) {
+    if (step?.step?.case !== 'checkpoint' || !step.step.value) return null;
+    const value = step.step.value;
+    return {
+      stepIndex,
+      checkpointIndex: positive(value.checkpointIndex),
+      includedStart: count(value.includedStepIndexStart),
+      includedEnd: count(value.includedStepIndexEnd),
+      intentOnly: value.intentOnly === true,
+      failed: value.modelSummarizationFailed === true,
+      fallback: value.usedFallbackSummary === true,
+      sessionSummary: typeof value.sessionSummary === 'string' ? value.sessionSummary.trim() : '',
+      userIntent: typeof value.userIntent === 'string' ? value.userIntent.trim() : '',
+      codeChangeSummary: typeof value.codeChangeSummary === 'string' ? value.codeChangeSummary.trim() : '',
+      memorySummary: typeof value.memorySummary === 'string' ? value.memorySummary.trim() : '',
+      createdAtMs: timestampMs(step.metadata?.createdAt),
+      usage: usageParts(step.metadata?.modelUsage),
+    };
+  }
+  function hasCheckpointContent(parsed) {
+    return Boolean(parsed && (parsed.sessionSummary || parsed.userIntent || parsed.codeChangeSummary || parsed.memorySummary));
+  }
+  function clearCompactedNotice(instance) {
+    if (instance.compactedNoticeTimer !== null) {
+      appWindow?.clearTimeout?.(instance.compactedNoticeTimer);
+      instance.compactedNoticeTimer = null;
+    }
+  }
+  function resetCompactions(instance) {
+    clearCompactedNotice(instance);
+    instance.compactionCache.clear();
+    instance.selectedCompactionStep = null;
+    instance.compactionTrackedId = null;
+    instance.knownCompactedCount = null;
   }
   function disposeSubscription(subscription) {
     if (typeof subscription === 'function') subscription();
@@ -2058,27 +2409,82 @@
     const state = instance.state;
     const {footer, submit} = composerBindings(instance.anchor);
     if (instance.compactingPending || state?.compacting === true) {
-      return {enabled:false, busy:true, reason:'正在压缩对话历史…'};
+      return {enabled:false, busy:true, justCompacted:false, reason:'正在压缩对话历史…'};
     }
     if (typeof submit !== 'function') {
-      return {enabled:false, busy:false, reason:'当前窗口的压缩接口不可用'};
+      return {enabled:false, busy:false, justCompacted:false, reason:'当前窗口的压缩接口不可用'};
     }
     if (footer?.isSubagent) {
-      return {enabled:false, busy:false, reason:'子代理视图不支持手动压缩'};
+      return {enabled:false, busy:false, justCompacted:false, reason:'子代理视图不支持手动压缩'};
     }
     if (!state?.hasTrajectory || !state.id || state.id === '_new' || state.generation < 1 || footer?.inExistingConversation === false) {
-      return {enabled:false, busy:false, reason:'当前尚无对话记录，发送首条消息后可压缩'};
+      return {enabled:false, busy:false, justCompacted:false, reason:'当前尚无对话记录，发送首条消息后可压缩'};
     }
     if (state.idle === false || footer?.isRunning || footer?.isConvoLoading || footer?.isCreatingEnvironment) {
-      return {enabled:false, busy:false, reason:'代理正在运行中，请等待完成后再压缩'};
+      return {enabled:false, busy:false, justCompacted:false, reason:'代理正在运行中，请等待完成后再压缩'};
     }
     if (composerHasDraft(instance.anchor, footer)) {
-      return {enabled:false, busy:false, reason:'输入框中有未发送内容，请先发送或清空后再压缩'};
+      return {enabled:false, busy:false, justCompacted:false, reason:'输入框中有未发送内容，请先发送或清空后再压缩'};
     }
     if (footer?.sendBlock?.reason) {
-      return {enabled:false, busy:false, reason:footer.sendBlock.reason};
+      return {enabled:false, busy:false, justCompacted:false, reason:footer.sendBlock.reason};
     }
-    return {enabled:true, busy:false, reason:'点击立即压缩当前对话历史'};
+    const justCompacted = Boolean(instance.compactedNoticeTimer);
+    return {enabled:true, busy:false, justCompacted, reason:justCompacted ? '刚刚已完成上下文压缩' : '点击立即压缩当前对话历史'};
+  }
+  async function selectCompaction(instance, stepIndex, {force = false} = {}) {
+    if (stopped || instance.disposed) return null;
+    const state = instance.state;
+    const steps = state?.compactedSteps ?? [];
+    const targetStep = typeof stepIndex === 'number' && steps.includes(stepIndex)
+      ? stepIndex : instance.selectedCompactionStep ?? steps.at(-1) ?? null;
+    if (targetStep === null || !state?.id || state.id === '_new') return null;
+    instance.selectedCompactionStep = targetStep;
+    const cascadeId = state.id;
+    const key = `${cascadeId}:${targetStep}`;
+    const cached = instance.compactionCache.get(key);
+    if (!force && (cached?.status === 'ready' || cached?.status === 'loading')) {
+      render(instance);
+      return cached;
+    }
+    const inlineStep = state.inlineCheckpoints?.get(targetStep);
+    if (inlineStep) {
+      const parsed = parseCheckpointStep(inlineStep, targetStep);
+      if (hasCheckpointContent(parsed)) {
+        const entry = {status:'ready', ...parsed, error:null};
+        instance.compactionCache.set(key, entry);
+        render(instance);
+        return entry;
+      }
+    }
+    if (typeof instance.client?.getCascadeTrajectorySteps !== 'function') {
+      const entry = {status:'error', stepIndex:targetStep, error:'当前窗口不支持读取压缩摘要'};
+      instance.compactionCache.set(key, entry);
+      render(instance);
+      return entry;
+    }
+    const epoch = instance.epoch;
+    instance.compactionCache.set(key, {status:'loading', stepIndex:targetStep, error:null});
+    render(instance);
+    try {
+      const response = await instance.client.getCascadeTrajectorySteps({cascadeId, stepOffset:targetStep, trajectoryVerbosity:3});
+      if (!valid(instance, epoch) || instance.state?.id !== cascadeId) return null;
+      const list = response?.steps ?? [];
+      const matched = list[0]?.step?.case === 'checkpoint' ? list[0] : list.find(item => item?.step?.case === 'checkpoint');
+      const parsed = parseCheckpointStep(matched, targetStep);
+      const entry = parsed
+        ? {status:'ready', ...parsed, error:null}
+        : {status:'error', stepIndex:targetStep, error:'未在轨迹中找到该次压缩记录'};
+      instance.compactionCache.set(key, entry);
+      render(instance);
+      return entry;
+    } catch {
+      if (!valid(instance, epoch) || instance.state?.id !== cascadeId) return null;
+      const entry = {status:'error', stepIndex:targetStep, error:'读取压缩摘要失败，请点击重试'};
+      instance.compactionCache.set(key, entry);
+      render(instance);
+      return entry;
+    }
   }
   async function compactConversation(instance) {
     if (stopped || instance.disposed) return false;
@@ -2114,9 +2520,11 @@
     let instance;
     const view = createView(document, anchor, {contextOverridesEnabled,
       compactConversation:() => compactConversation(instance),
+      selectCompaction:(stepIndex, options) => selectCompaction(instance, stepIndex, options),
       ...(contextOverridesEnabled ? {setContextLimit:tokens => setContextLimit(instance, tokens)} : {})});
     instance = {...createHistory(), anchor, view, provider:null, client:null, selected:null, subscription:null,
       summaryStore:null, summarySubscription:null, agentRegistry:null, subagents:new Map(),
+      compactionCache:new Map(), selectedCompactionStep:null, compactionTrackedId:null, knownCompactedCount:null, compactedNoticeTimer:null,
       epoch:0, queued:false, compactingPending:false, compactQueued:false, models:null, config:null, lastError:null, snapshot:null};
     instances.set(anchor, instance);
     rebind(instance);
@@ -2156,11 +2564,22 @@
       ? `${current ? '本次调用' : '上次调用'} · ${estimated ? '后端估算' : '模型统计'}${state?.idle === false ? ' · 运行中' : ''}`
       : state?.generation ? (instance.lastError ? '读取失败，可随下次调用重试' : '等待本次调用数据') : '尚未开始调用';
     const label = record?.label || model?.label || record?.responseLabel || (String(modelId) === String(selectedModel(instance)) ? instance.selected?.label : null);
+    const compactedSteps = state?.compactedSteps ?? [];
+    const selectedStep = compactedSteps.includes(instance.selectedCompactionStep)
+      ? instance.selectedCompactionStep : compactedSteps.at(-1) ?? null;
+    const cachedCompaction = selectedStep !== null && state?.id
+      ? instance.compactionCache.get(`${state.id}:${selectedStep}`) ?? null : null;
+    const compactions = {
+      steps: compactedSteps,
+      selectedStep,
+      entry: cachedCompaction ?? (selectedStep !== null ? {status:'idle', stepIndex:selectedStep, error:null} : null),
+    };
     const snapshot = {used, maxContext, modelCapacity:capacity, compactionReference:compaction,
       outputReserve:output, estimatedTokens:record?.estimated ?? null,
       compactionBasisLabel:config?.modelCount === true ? '模型报告用量' : config?.modelCount === false ? '后端估算' : null,
       snapshotLabel, modelLabel:label ?? null,
       selectedLabel:instance.selected?.label ?? null, contextSetting:contextSetting(instance), compact:compactState(instance),
+      compactions,
       metrics:conversationMetrics(instance), subagentMetrics:subagentMetrics(instance), ...quotaValues(instance,label)};
     cacheHistory(instance);
     for (const child of instance.subagents.values()) cacheHistory(child);
@@ -2284,15 +2703,42 @@
     const next = scalarState(state);
     const viewId = instance.anchor.closest('[data-cascade-id]')?.getAttribute('data-cascade-id');
     if (viewId && next.id !== viewId) {
-      releaseSubagents(instance); instance.config = null;
-      updateHistory(instance,instance,{id:viewId,trajectoryId:null,generation:0,hasTrajectory:false});
+      releaseSubagents(instance); instance.config = null; resetCompactions(instance);
+      updateHistory(instance,instance,{id:viewId,trajectoryId:null,generation:0,hasTrajectory:false,compactedSteps:[],inlineCheckpoints:new Map()});
       render(instance); return;
     }
     if (instance.state?.id && next.id !== instance.state.id) {
       // A reused native provider must not carry the previous conversation's data.
-      releaseSubagents(instance); instance.config = null;
+      releaseSubagents(instance); instance.config = null; resetCompactions(instance);
     }
     updateHistory(instance, instance, next);
+    if (!next.hasTrajectory || !next.id || next.id === '_new') {
+      resetCompactions(instance);
+    } else if (instance.compactionTrackedId !== next.id) {
+      instance.compactionTrackedId = next.id;
+      instance.knownCompactedCount = next.compactedSteps.length;
+      instance.selectedCompactionStep = next.compactedSteps.at(-1) ?? null;
+    } else {
+      if (next.compactedSteps.length > instance.knownCompactedCount) {
+        instance.knownCompactedCount = next.compactedSteps.length;
+        const latest = next.compactedSteps.at(-1);
+        instance.compactionCache.delete(`${next.id}:${latest}`);
+        instance.selectedCompactionStep = latest;
+        clearCompactedNotice(instance);
+        if (typeof appWindow?.setTimeout === 'function') {
+          instance.compactedNoticeTimer = appWindow.setTimeout(() => {
+            instance.compactedNoticeTimer = null;
+            if (!stopped && !instance.disposed) render(instance);
+          }, 3000);
+        }
+      } else if (next.compactedSteps.length < instance.knownCompactedCount) {
+        instance.knownCompactedCount = next.compactedSteps.length;
+        instance.compactionCache.clear();
+      }
+      if (!next.compactedSteps.includes(instance.selectedCompactionStep)) {
+        instance.selectedCompactionStep = next.compactedSteps.at(-1) ?? null;
+      }
+    }
     syncSubagents(instance);
     const quotaEvent = `${next.id}:${next.generation}:${next.idle}`;
     if (instance.quotaEvent !== quotaEvent) {
@@ -2323,6 +2769,7 @@
       disposeSubscription(instance.summarySubscription);
       releaseSubagents(instance);
       releaseContextClient(instance);
+      resetCompactions(instance);
       instance.subscription = instance.summarySubscription = null;
       instance.epoch++;
       instance.provider = next.provider; instance.client = next.client;
@@ -2348,6 +2795,7 @@
     releaseContextClient(instance);
     releaseQuota(instance);
     releaseLayout(instance);
+    resetCompactions(instance);
     instance.view.dispose(); instances.delete(instance.anchor);
   }
   setFallbackTitles(runtimeOptions?.fallbackTitles);
